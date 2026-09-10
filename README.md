@@ -83,7 +83,7 @@ See [DATASETS.md](docs/DATASETS.md) for import formats and source URLs.
 # Backend only
 .\.venv\Scripts\python.exe -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 # Frontend only, in a second terminal
-npm.cmd run dev
+npm.cmd run dev:frontend
 # Verify the pipeline (isolated temporary database)
 .\.venv\Scripts\python.exe -m pytest -q
 # Build and type-check
@@ -118,3 +118,7 @@ docs/                     Presentation, data, architecture and capability guides
 ## Local security and custody
 
 Servers bind to loopback. Cross-origin writes are rejected. Uploaded filenames cannot choose artifact paths. No case data is transmitted to a third-party service. Audit hashes make accidental modification detectable; they are not digital signatures or tamper-proof storage. For network deployment, add authentication, authorization, signed evidence storage, durable worker infrastructure and independent scientific validation.
+
+## Avoiding startup connection errors
+
+Use `npm run dev` to start both the backend and frontend. Keep its terminal open while presenting. The launcher verifies service health, reuses an existing OCEAN-EYE service, and starts a missing service. `npm run dev:frontend` intentionally starts only the dashboard and needs a separate backend. If a browser was opened before startup finished, refresh it after the launcher prints **OCEAN-EYE ready**.
