@@ -1,0 +1,6 @@
+.venv
+node_modules
+dist
+datasets
+package-lock.json
+tmp

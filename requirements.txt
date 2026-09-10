@@ -1,0 +1,12 @@
+fastapi==0.141.1
+uvicorn==0.52.4
+python-multipart==0.0.32
+numpy==2.3.5
+scipy==1.15.3
+Pillow==12.3.0
+rasterio==1.4.3
+shapely==2.1.2
+pyproj==3.7.1
+reportlab==4.4.9
+pytest==9.1.1
+httpx==0.28.1

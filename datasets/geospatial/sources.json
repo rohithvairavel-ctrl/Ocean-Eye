@@ -1,0 +1,38 @@
+[
+  {
+    "name": "ne_110m_admin_0_countries",
+    "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson",
+    "kind": "country",
+    "features": 177,
+    "sha256": "6866c877d39cba9c357620878839b336d569f8c662d3cfab4cb1dbe2d39c977f",
+    "license": "Public domain",
+    "snapshot": "2026-09-10"
+  },
+  {
+    "name": "ne_10m_geography_marine_polys",
+    "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_geography_marine_polys.geojson",
+    "kind": "sea",
+    "features": 306,
+    "sha256": "53f865e8ffa966cdd402145c82c5cd14ee7ce974cd0eb9a3f59f03a4cfd2d66c",
+    "license": "Public domain",
+    "snapshot": "2026-09-10"
+  },
+  {
+    "name": "ne_10m_ports",
+    "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_ports.geojson",
+    "kind": "port",
+    "features": 1081,
+    "sha256": "c5a5028f5187a5e1b9fe7f0fab99804a8be7482099a2365d404fb7e9dd6b5457",
+    "license": "Public domain",
+    "snapshot": "2026-09-10"
+  },
+  {
+    "name": "ne_110m_coastline",
+    "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_coastline.geojson",
+    "kind": "coastline",
+    "features": 134,
+    "sha256": "851f581ff5ffb844deed8ae1a9ce22e3c4bb3d74fa342cadb5d8e39b41ae7c3c",
+    "license": "Public domain",
+    "snapshot": "2026-09-10"
+  }
+]

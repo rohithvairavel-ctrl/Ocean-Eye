@@ -1,0 +1,15 @@
+.venv/
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+datasets/cases/
+datasets/demo/
+datasets/satellite/*
+datasets/ais/*
+datasets/environment/*
+!datasets/**/.gitkeep
+*.sqlite*
+tmp/
+
+*.tsbuildinfo

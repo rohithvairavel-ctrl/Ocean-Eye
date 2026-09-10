@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "OCEAN-EYE: Start app",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["scripts/launch.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "OCEAN-EYE: Test pipeline",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["-m", "pytest", "-q"],
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "OCEAN-EYE: Build presentation",
+      "type": "shell",
+      "command": "npm.cmd run build",
+      "problemMatcher": []
+    },
+    {
+      "label": "OCEAN-EYE: Start presentation build",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["scripts/launch.py", "--production"],
+      "problemMatcher": []
+    }
+  ]
+}
