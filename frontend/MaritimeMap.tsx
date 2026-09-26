@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Crosshair, Globe2, Layers, Minus, Plus } from 'lucide-react';
-import { Json } from './api';
-
+import { Json, time } from './api';
 type Props = {
   analysis: Json | null;
   geography: Json | null;
@@ -11,6 +10,27 @@ type Props = {
   focus: number[] | null;
   global?: boolean;
   forecastHour?: number;
+  incidents?: Json[];
+  onCase?: (id: string) => void;
+  response?: Json | null;
+  onPlanningPoint?: (point: number[]) => void;
+};
+const layerNames: Record<string, string> = {
+  slick: 'Observed dark-region candidate',
+  satellite: 'SAR image',
+  segmentation: 'Segmentation mask',
+  hindcast: 'Hindcast particles / envelope',
+  origin: 'Modeled origin REGION',
+  forecast: 'Forecast envelope',
+  particles: 'Forecast particles',
+  ais: 'Observed AIS markers',
+  track: 'Selected vessel track',
+  gaps: 'AIS gap assumptions',
+  sar: 'SAR–AIS return screening',
+  currents: 'Input environmental forcing',
+  receptors: 'Loaded ecological receptors',
+  assets: 'Assumed response asset',
+  intervention: 'Intervention planning route / zone',
 };
 export default function MaritimeMap({
   analysis: a,
@@ -20,36 +40,73 @@ export default function MaritimeMap({
   focus,
   global = false,
   forecastHour = 24,
+  incidents = [],
+  onCase,
+  response,
+  onPlanningPoint,
 }: Props) {
   const element = useRef<HTMLDivElement>(null),
     map = useRef<L.Map | null>(null),
-    layers = useRef<L.LayerGroup | null>(null),
+    group = useRef<L.LayerGroup | null>(null),
     base = useRef<L.GeoJSON | null>(null);
-  const [show, setShow] = useState({
-    satellite: true,
-    ais: true,
+  const [show, setShow] = useState<Record<string, boolean>>({
+    slick: true,
+    satellite: false,
+    segmentation: false,
+    hindcast: false,
     origin: true,
-    forecast: true,
-    receptors: true,
-    currents: true,
+    forecast: false,
+    particles: false,
+    ais: true,
+    track: true,
+    gaps: false,
+    sar: false,
+    currents: false,
+    receptors: false,
+    assets: true,
+    intervention: true,
   });
-  const [controls, setControls] = useState(false);
-  const [aisMoment, setAisMoment] = useState('release');
-  const selectRef = useRef(onSelect);
+  const [controls, setControls] = useState(false),
+    [playing, setPlaying] = useState(false),
+    [frame, setFrame] = useState(0);
+  const selectRef = useRef(onSelect),
+    caseRef = useRef(onCase),
+    pointRef = useRef(onPlanningPoint);
   selectRef.current = onSelect;
+  caseRef.current = onCase;
+  pointRef.current = onPlanningPoint;
+  const frames: Json[] = a
+    ? [
+        ...a.origin.snapshots
+          .map((s: Json) => ({ ...s, hours: -s.hours_before, kind: 'MODELED' }))
+          .sort((x: Json, y: Json) => x.hours - y.hours),
+        { hours: 0, kind: 'OBSERVED', geometry: a.spill.geometry },
+        ...a.forecast.steps.map((s: Json) => ({ ...s, kind: 'PREDICTED' })),
+      ]
+    : [];
+  const current = frames[frame] || frames.find((s) => s.hours === 0);
+  useEffect(() => {
+    setFrame(a?.origin.snapshots.length || 0);
+    setPlaying(false);
+  }, [a?.run_id]);
+  useEffect(() => {
+    if (!playing || !frames.length) return;
+    const timer = setInterval(() => setFrame((f) => (f + 1) % frames.length), 1200);
+    return () => clearInterval(timer);
+  }, [playing, frames.length]);
   useEffect(() => {
     if (!element.current) return;
     const m = L.map(element.current, {
       zoomControl: false,
-      attributionControl: true,
       minZoom: 2,
       maxZoom: 14,
-      preferCanvas: true,
-    }).setView([12.3, 80.5], 8);
+      preferCanvas: false,
+    }).setView([15, 45], 2);
     map.current = m;
-    layers.current = L.layerGroup().addTo(m);
+    group.current = L.layerGroup().addTo(m);
     m.attributionControl.addAttribution('Natural Earth · approximate boundaries');
     L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(m);
+    m.on('click', (e: L.LeafletMouseEvent) => pointRef.current?.([e.latlng.lng, e.latlng.lat]));
     const observer = new ResizeObserver(() => m.invalidateSize());
     observer.observe(element.current);
     return () => {
@@ -66,132 +123,176 @@ export default function MaritimeMap({
       filter: (f) => f.properties?.kind === 'country',
       style: { color: '#2e6269', weight: 1, fillColor: '#173c40', fillOpacity: 0.85 },
       onEachFeature: (f, l) => {
-        const el = document.createElement('div');
-        el.textContent = `${f.properties?.name} · ${f.properties?.status} · ${f.properties?.source}`;
-        l.bindTooltip(el);
+        const text = document.createElement('span');
+        text.textContent = `${f.properties?.name} · approximate cartographic boundary`;
+        l.bindTooltip(text);
       },
     }).addTo(m);
     base.current.bringToBack();
   }, [geography]);
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
-    if (global) m.setView([15, 45], 2);
+    if (global) map.current?.setView([15, 45], 2);
     else if (a)
-      m.fitBounds(
+      map.current?.fitBounds(
         [
           [a.spill.bounds[1], a.spill.bounds[0]],
           [a.spill.bounds[3], a.spill.bounds[2]],
         ],
-        { padding: [25, 25] },
+        { padding: [35, 35] },
       );
   }, [a?.run_id, global]);
   useEffect(() => {
-    if (focus) map.current?.flyTo([focus[1], focus[0]], 8, { duration: 1 });
+    if (focus) map.current?.flyTo([focus[1], focus[0]], 8, { duration: 0.5 });
   }, [focus]);
   useEffect(() => {
-    const group = layers.current;
-    const m = map.current;
-    if (!group || !m) return;
-    group.clearLayers();
+    const g = group.current;
+    if (!g) return;
+    g.clearLayers();
+    const geo = (value: Json, color: string, opacity = 0.12, dash?: string) =>
+      L.geoJSON(value as any, {
+        style: { color, weight: 1.7, fillOpacity: opacity, dashArray: dash },
+      }).addTo(g);
+    const label = (text: string) => {
+      const el = document.createElement('span');
+      el.textContent = text;
+      return el;
+    };
+    const dot = (p: number[], color: string, radius = 3) =>
+      L.circleMarker([p[1], p[0]], { color, radius, weight: 1, fillOpacity: 0.7 }).addTo(g);
+    for (const c of incidents) {
+      if (!c.coordinates) continue;
+      dot(c.coordinates, c.source_type === 'SYNTHETIC' ? '#efb85c' : '#56c8f4', 7)
+        .bindTooltip(
+          label(`${c.name} · ${c.status} · ${time(c.observation_time)} · ${c.source_type}`),
+        )
+        .on('click', () => caseRef.current?.(c.id));
+    }
     if (!a) return;
-    const addGeo = (geometry: Json, color: string, fillOpacity = 0.1, dashArray?: string) =>
-      L.geoJSON(geometry as any, {
-        style: { color, weight: 1.6, fillColor: color, fillOpacity, dashArray },
-      }).addTo(group);
-    if (show.satellite && !global) {
+    if (show.satellite || show.segmentation) {
       const b = a.spill.bounds;
-      L.imageOverlay(
-        a.assets + '/satellite.png',
-        [
-          [b[1], b[0]],
-          [b[3], b[2]],
-        ],
-        { opacity: 0.16, interactive: false, className: 'sar-layer' },
-      ).addTo(group);
+      for (const key of ['satellite', 'segmentation'])
+        if (show[key])
+          L.imageOverlay(
+            `${a.assets}/${key === 'satellite' ? 'satellite.png' : 'mask.png'}`,
+            [
+              [b[1], b[0]],
+              [b[3], b[2]],
+            ],
+            { opacity: key === 'satellite' ? 0.3 : 0.45, interactive: false },
+          ).addTo(g);
     }
-    if (show.forecast) {
-      const step = a.forecast.steps.find((s: Json) => s.hours === forecastHour);
-      if (step) addGeo(step.geometry, '#eeaa4d', 0.16, '5 6');
+    if (show.slick)
+      geo(a.spill.geometry, '#ff5b65', 0.25).bindTooltip(
+        'OBSERVED dark-region candidate · pollutant UNKNOWN',
+      );
+    if (show.origin)
+      geo(a.origin.geometry, '#4fe3ca', 0.09, '4 6').bindTooltip(
+        'MODELED origin region · conditional uncertainty, not a known release point',
+      );
+    if (show.hindcast) {
+      const s = current?.hours < 0 ? current : null;
+      if (s) {
+        geo(s.geometry, '#66dfc4', 0.08, '2 4');
+        for (const p of s.particles || []) dot(p, '#66dfc4', 2);
+      } else for (const p of a.origin.particles) dot(p, '#66dfc4', 2);
     }
-    if (show.origin) {
-      addGeo(a.origin.geometry, '#4fe3ca', 0.16, '4 6');
-      for (const p of a.origin.particles)
-        L.circleMarker([p[1], p[0]], {
-          radius: 2,
-          color: '#55eac6',
-          weight: 0,
-          fillOpacity: 0.22,
-        }).addTo(group);
-      L.marker([a.origin.centroid[1], a.origin.centroid[0]], {
+    const predicted =
+      current?.hours < 0
+        ? null
+        : current?.hours > 0
+          ? current
+          : a.forecast.steps.find((s: Json) => s.hours === forecastHour);
+    if (predicted && show.forecast)
+      geo(predicted.geometry, '#eeaa4d', 0.12, '5 6').bindTooltip(
+        `PREDICTED conditional envelope +${predicted.hours} h`,
+      );
+    if (predicted && show.particles)
+      for (const p of predicted.particles || []) dot(p, '#eeaa4d', 2);
+    if (show.receptors)
+      for (const f of a.receptors.features)
+        geo(f, '#baa2ff', 0.08, '3 5').bindTooltip(
+          label(
+            `${f.properties.name} · ${f.properties.source_type} · ${f.properties.source} / ${f.properties.version}`,
+          ),
+        );
+    if (show.sar)
+      for (const r of a.dark.sar_returns)
+        dot(r.coordinates, r.matched ? '#7ebba9' : '#efa968', 5).bindTooltip(
+          label(
+            `SCREENING SAR return · ${r.matched ? 'AIS match within tolerance' : 'unmatched; not a confirmed dark vessel'}`,
+          ),
+        );
+    const sampleTime = Date.parse(a.observation_time) + (current?.hours || 0) * 3600000;
+    if (show.currents) {
+      const records = a.environment.records;
+      const row = records.reduce((b: Json, r: Json) =>
+        Math.abs(Date.parse(r.time) - sampleTime) < Math.abs(Date.parse(b.time) - sampleTime)
+          ? r
+          : b,
+      );
+      const p = a.spill.centroid;
+      const angle = (Math.atan2(row.current_east_ms, -row.current_north_ms) * 180) / Math.PI - 90;
+      L.marker([p[1], p[0]], {
         icon: L.divIcon({
-          className: 'origin-star',
-          html: '✦',
-          iconSize: [24, 24],
-          iconAnchor: [12, 12],
+          className: 'current-arrow',
+          html: `<span style="display:block;transform:rotate(${angle}deg)">➤</span>`,
         }),
       })
-        .bindTooltip('Modeled origin · conditional 90% region')
-        .addTo(group);
-    }
-    addGeo(a.spill.geometry, '#ff5b65', 0.3);
-    L.marker([a.spill.centroid[1], a.spill.centroid[0]], {
-      icon: L.divIcon({
-        className: 'spill-label',
-        html: '<span>● OIL CANDIDATE</span>',
-        iconSize: [145, 24],
-        iconAnchor: [65, 45],
-      }),
-    }).addTo(group);
-    if (show.receptors) for (const f of a.receptors.features) addGeo(f, '#baa2ff', 0.08, '3 5');
-    if (show.currents && !global) {
-      const c = a.spill.centroid;
-      for (let i = -2; i <= 2; i++)
-        for (let j = -2; j <= 2; j++) {
-          L.marker([c[1] + i * 0.14, c[0] + j * 0.18], {
-            icon: L.divIcon({
-              className: 'current-arrow',
-              html: `<span style="display:block;transform:rotate(${(Math.atan2(a.environment.records[0].current_east_ms, -a.environment.records[0].current_north_ms) * 180) / Math.PI - 90}deg)">➤</span>`,
-              iconSize: [18, 18],
-            }),
-          })
-            .bindTooltip('Input current direction · uniform forcing adapter')
-            .addTo(group);
-        }
-    }
-    if (show.ais)
-      for (const v of a.vessels) {
-        const active = v.mmsi === selected,
-          top = v.mmsi === a.vessels[0].mmsi,
-          color = top ? '#ff6572' : active ? '#f8d788' : '#38bdf8';
-        L.geoJSON(v.geometry, {
-          style: { color, weight: active ? 2 : 1, opacity: active ? 0.9 : 0.35, dashArray: '5 7' },
-        }).addTo(group);
-        const targetTime =
-          aisMoment === 'release'
-            ? (Date.parse(a.origin.release_window[0]) + Date.parse(a.origin.release_window[1])) / 2
-            : Date.parse(a.observation_time);
-        const nearest = v.track.reduce((best: Json, p: Json) =>
-          Math.abs(Date.parse(p.time) - targetTime) < Math.abs(Date.parse(best.time) - targetTime)
-            ? p
-            : best,
+        .addTo(g)
+        .bindTooltip(
+          label(
+            `INPUT uniform forcing · nearest record ${time(row.time)} · E ${row.current_east_ms} / N ${row.current_north_ms} m/s`,
+          ),
         );
-        const p = nearest.coordinates;
-        const marker = L.marker([p[1], p[0]], {
-          icon: L.divIcon({
-            className: 'vessel-marker',
-            html: `<span style="color:${color};font-size:${active ? 23 : 17}px">➤</span>`,
-            iconSize: [20, 20],
-          }),
-        }).addTo(group);
-        const label = document.createElement('span');
-        label.textContent =
-          v.name + ' · observed ' + new Date(nearest.time).toISOString().slice(11, 16) + ' UTC';
-        marker.bindTooltip(label);
-        marker.on('click', () => selectRef.current(v.mmsi));
-        if (active) for (const gap of v.gaps) addGeo(gap.corridor, '#ecac58', 0.07, '2 4');
+    }
+    for (const v of a.vessels) {
+      const active = v.mmsi === selected,
+        color = active ? '#f8d788' : '#38bdf8';
+      if (active && show.track)
+        L.geoJSON(v.geometry, { style: { color, weight: 2.5, opacity: 0.9, dashArray: '5 6' } })
+          .addTo(g)
+          .bindTooltip(
+            'OBSERVED AIS positions · connecting segments do not establish the intervening route',
+          );
+      if (active && show.gaps)
+        for (const gap of v.gaps)
+          geo(gap.corridor, '#eeaa4d', 0.08, '2 4').bindTooltip(
+            'ASSUMED possible travel envelope during missing AIS interval',
+          );
+      if (!show.ais || !v.track.length) continue;
+      const nearest = v.track.reduce((b: Json, p: Json) =>
+        Math.abs(Date.parse(p.time) - sampleTime) < Math.abs(Date.parse(b.time) - sampleTime)
+          ? p
+          : b,
+      );
+      if (Math.abs(Date.parse(nearest.time) - sampleTime) > 30 * 60000) continue;
+      const marker = dot(nearest.coordinates, color, active ? 6 : 3);
+      marker.setStyle({
+        opacity: active || !selected ? 1 : 0.4,
+        fillOpacity: active || !selected ? 0.8 : 0.25,
+      });
+      marker.bindTooltip(
+        label(`${v.name} · OBSERVED ${time(nearest.time)} · nearest within 30 min`),
+      );
+      marker.on('click', () => selectRef.current(v.mmsi));
+    }
+    if (response) {
+      if (show.assets && response.asset)
+        dot(response.asset.coordinates, '#d5b7ff', 7).bindTooltip(
+          label(`ASSUMED ${response.asset.name} · availability unverified`),
+        );
+      if (show.intervention) {
+        geo(response.candidate_interception_zone, '#d5b7ff', 0.04, '6 6');
+        if (response.route)
+          geo(response.route, '#d5b7ff', 0, '4 4').bindTooltip(
+            'ASSUMED geodesic planning route · navigation not modeled',
+          );
+        dot(response.target, '#d5b7ff', 5).bindTooltip(
+          'Planning target · not guaranteed interception',
+        );
       }
-  }, [a, show, selected, global, forecastHour, aisMoment]);
+    }
+  }, [a, show, selected, global, forecastHour, frame, incidents, response]);
   return (
     <div className="map-wrap">
       <div
@@ -201,24 +302,9 @@ export default function MaritimeMap({
       />
       <div className="map-top">
         <span className="map-chip">
-          <span className="live-dot" />
-          {global ? 'GLOBAL MARITIME MAP' : 'INVESTIGATION AREA'}
+          {global ? 'SAVED INCIDENTS' : 'INVESTIGATION AREA'}
           <small>WGS 84</small>
         </span>
-      </div>
-      <div className="ais-moment">
-        <button
-          className={aisMoment === 'release' ? 'chosen' : ''}
-          onClick={() => setAisMoment('release')}
-        >
-          AIS · release window
-        </button>
-        <button
-          className={aisMoment === 'observation' ? 'chosen' : ''}
-          onClick={() => setAisMoment('observation')}
-        >
-          At SAR observation
-        </button>
       </div>
       <div className="map-tools">
         <button title="Zoom in" onClick={() => map.current?.zoomIn()}>
@@ -255,33 +341,58 @@ export default function MaritimeMap({
                 checked={value}
                 onChange={() => setShow({ ...show, [key]: !value })}
               />
-              {key}
+              {layerNames[key]}
             </label>
           ))}
+        </div>
+      )}
+      {a && current && (
+        <div className="map-time">
+          <button
+            onClick={() => {
+              setShow((s) => ({ ...s, hindcast: true, forecast: true }));
+              setPlaying(!playing);
+            }}
+          >
+            {playing ? 'Pause' : 'Play'}
+          </button>
+          <input
+            aria-label="Hindcast observation forecast time"
+            type="range"
+            min="0"
+            max={frames.length - 1}
+            value={frame}
+            onChange={(e) => {
+              setFrame(Number(e.target.value));
+              setPlaying(false);
+              setShow((s) => ({ ...s, hindcast: true, forecast: true }));
+            }}
+          />
+          <span>
+            {current.kind} · {current.hours > 0 ? '+' : ''}
+            {current.hours} h<br />
+            {time(new Date(Date.parse(a.observation_time) + current.hours * 3600000).toISOString())}
+          </span>
+          <small>AIS: observed reports within 30 min only. No predicted vessel motion.</small>
         </div>
       )}
       <div className="map-legend">
         <span>
           <i style={{ background: '#ff5b65' }} />
-          Detected candidate
+          OBSERVED candidate
         </span>
         <span>
           <i style={{ background: '#4fe3ca' }} />
-          Origin uncertainty
-        </span>
-        <span>
-          <i style={{ background: '#38bdf8' }} />
-          AIS vessel / track
+          MODELED region
         </span>
         <span>
           <i style={{ background: '#eeaa4d' }} />
-          Gap / forecast
+          PREDICTED envelope
         </span>
-      </div>
-      <div className="map-coordinates">
-        {a
-          ? `${a.spill.centroid[1].toFixed(3)}° N  ${a.spill.centroid[0].toFixed(3)}° E`
-          : 'Ready for investigation'}
+        <span>
+          <i style={{ background: '#d5b7ff' }} />
+          ASSUMED response
+        </span>
       </div>
     </div>
   );

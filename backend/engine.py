@@ -96,7 +96,7 @@ def run(case_id, run_id):
         context = []
         with storage.connect() as db:
             for row in db.execute(
-                "SELECT * FROM geography WHERE kind IN ('protected_area','fishery','port','infrastructure','coastline')"
+                "SELECT * FROM geography WHERE kind IN ('protected_area','fishery','port','infrastructure','coastline','coral','mangrove','seagrass','habitat','species_range','sensitive_ecosystem','fisheries')"
             ):
                 if cfg["source_type"] == "REAL" and row["source_type"] == "SYNTHETIC":
                     continue
@@ -318,6 +318,7 @@ def run(case_id, run_id):
                 "code_hashes": code_hashes,
                 "inputs": inputs,
                 "parameters": origin["parameters"],
+                "forecast_parameters": forecast["parameters"],
             },
             "analysis_hash": config_hash,
             "limitations": limitations,
@@ -328,6 +329,10 @@ def run(case_id, run_id):
             ],
             "assets": f"/data/{case_id}/{run_id}",
         }
+        from .intelligence import derive
+
+        result["intelligence"] = derive(result)
+        save("intelligence.json", result["intelligence"])
         save("analysis.json", result)
         save(
             "satellite_metadata.json",

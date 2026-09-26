@@ -29,6 +29,9 @@ async def lifespan(app):
 
 
 app = FastAPI(title="OCEAN-EYE", version="1.0.0", lifespan=lifespan)
+from .response_api import router as response_router
+
+app.include_router(response_router)
 
 
 @app.middleware("http")
@@ -81,6 +84,7 @@ def cases():
             "source_type": json.loads(r["config"])["source_type"],
         }
         for r in rows
+        if not json.loads(r["config"]).get("archived")
     ]
 
 
@@ -172,9 +176,20 @@ async def import_case(
         raise ValueError("Environment must declare source_type")
     import rasterio
 
-    with rasterio.open(folder / "satellite.tif") as src:
+    try:
+        raster = rasterio.open(folder / "satellite.tif")
+    except rasterio.errors.RasterioIOError as exc:
+        raise ValueError("Satellite file is not a readable GeoTIFF") from exc
+    with raster as src:
         if not src.crs:
             raise ValueError("Satellite must contain a valid CRS")
+        declared = src.tags().get("radiometry")
+        if declared and declared != parsed.radiometry:
+            raise ValueError("Declared radiometry conflicts with GeoTIFF metadata")
+        if src.width * src.height > 25000000:
+            raise ValueError(
+                "Scene exceeds 25 million pixels; tile the scene before import"
+            )
         satellite_source = (
             "SYNTHETIC"
             if src.tags().get("source_type") == "SYNTHETIC"

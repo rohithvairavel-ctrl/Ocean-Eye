@@ -49,3 +49,14 @@ SAR vessel screening identifies small bright connected components. A spatial mat
 ## Production integration points
 
 Replace the SAR screening entry point in `backend/satellite.py` with a validated segmentation/look-alike model that returns the same geometry/metadata contract. Replace the uniform forcing adapter in `backend/drift.py` with a gridded space/time interpolator and physics modules. Keep raw artifacts and algorithm versions in every result. Move the storage interface to PostGIS and add durable workers, authentication, signed evidence storage and independent benchmark validation before network/operational deployment.
+
+## Environmental response intelligence (implemented)
+
+- `backend/classification.py`: typed classifier adapter contract; unavailable status prevents fabricated prediction/confidence/metrics. No trained classifier is installed.
+- `backend/intelligence.py`: deterministic event rules, recommendation traces, ecological source/version metadata, typed reasoning nodes and vessel dossier contract. Notification adapter interface only; no external sending.
+- `backend/response.py`: run-bound geodesic timing planner. Kind distinguishes operational intent; containment/removal physics is deliberately absent for every intervention kind.
+- `backend/response_api.py`: saved-case inventory, intelligence/dossiers, immutable SQLite scenarios, SHA-256 export and supplemental evidence ZIP. Derived views of old runs identify their current derivation code hashes and preserve original run artifacts.
+- Ecology supports imported coral, mangrove, seagrass, habitats, species ranges, protected areas, fisheries, ports and coastline. Importing a dataset is not validation of its authority or species presence. Re-run after importing layers to include them in the immutable receptor snapshot.
+- Scenarios are referenced to satellite observation time, not the live clock. Arrival windows reflect operator speed bounds; they are not calibrated confidence intervals. Forecast samples at 6/12/24/48 h cannot establish exact exposure onset.
+- Existing PDFs remain the original analysis snapshot. Later scenarios are supplied as separately hashed JSON and a supplemental ZIP; they do not rewrite that report.
+- Known legacy integration fixtures are archived from the operational case list without deleting their case, runs or audit history.

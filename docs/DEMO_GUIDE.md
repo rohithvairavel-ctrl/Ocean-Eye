@@ -46,3 +46,13 @@ Use **Terminal > Run Task > OCEAN-EYE: Test pipeline** to demonstrate the tests.
 Say: “This is an end-to-end forensic screening prototype with transparent algorithms and reproducible synthetic data.”
 
 Do not claim a validated oil-identification model, real offending vessels, access to government data, operational probability calibration, trained route models, or a complete enterprise deployment. See the capability matrix for the exact installed scope.
+
+## Response intelligence walkthrough
+
+1. Use the workflow ribbon to inspect **Verification**: pollutant UNKNOWN, classifier unavailable, no claimed ML accuracy.
+2. Open **Ecological Exposure** and show the first sampled overlap, reference dataset/version and species-data limitation.
+3. Open **Response Twin**. Save a no-intervention baseline. Then select dispatch, supply an assumed departure location, speed and delay, and save. Compare the arrival/ready window against the selected forecast horizon. A demo-only example is longitude 80, latitude 12; these coordinates do not establish a real available asset.
+4. Add a delayed scenario and review **Attention & Alerts**. Expand the rule trace; explain that warnings are anchored to the historic observation, not a live emergency service.
+5. Select a vessel in **Evidence Graph**, open its dossier and inspect factor values, weights, contribution, speed/course observations, gaps and contrary evidence. Exclude that candidate to compare the remaining ranking without changing evidence.
+6. In **Reports**, download the original PDF or the supplemental evidence/response ZIP. Scenarios cannot claim removal effectiveness or ecological damage reduction.
+7. On the map, enable only the layers needed for the explanation. Use Play/Pause and the time slider. There is no exact known origin point or predicted AIS track.

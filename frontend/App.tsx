@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { api, post, Json, time, coordinate } from './api';
 import MaritimeMap from './MaritimeMap';
+import { Workflow, Dossier, GlobalIncidents, Intelligence } from './Intelligence';
 
 const nav = [
   ['Overview', Eye],
@@ -40,7 +41,11 @@ const nav = [
   ['Drift & Origin', Waves],
   ['AIS Correlation', Ship],
   ['Vessel Ranking', Activity],
-  ['Dark Vessels', Radar],
+  ['SAR-AIS Screening', Radar],
+  ['Verification', ShieldCheck],
+  ['Ecological Exposure', Waves],
+  ['Response Twin', Anchor],
+  ['Attention & Alerts', TriangleAlert],
   ['Evidence Graph', Network],
   ['Timeline', Clock3],
   ['Cases & Data', FolderOpen],
@@ -120,20 +125,47 @@ function MiniShape({
     </svg>
   );
 }
-function Spark({ values, color = '#41c4f4' }: { values: number[]; color?: string }) {
-  const max = Math.max(...values, 1);
+function Spark({ track, field }: { track: Json[]; field: 'sog' | 'cog' }) {
+  const start = Date.parse(track[0].time),
+    span = Math.max(Date.parse(track[track.length - 1].time) - start, 1);
+  const max = Math.max(...track.map((p) => p[field] ?? 0), 1);
+  const x = (p: Json) => ((Date.parse(p.time) - start) / span) * 300;
+  const y = (p: Json) => 55 - (p[field] / max) * 48;
   return (
-    <svg viewBox="0 0 300 60" className="spark">
-      <path d="M0 55H300" stroke="#244050" />
-      <polyline
-        points={values
-          .map((v, i) => `${(i / Math.max(values.length - 1, 1)) * 300},${55 - (v / max) * 48}`)
-          .join(' ')}
-        fill="none"
-        stroke={color}
-        strokeWidth="2"
-      />
-    </svg>
+    <>
+      <svg
+        viewBox="0 0 300 60"
+        className="spark"
+        role="img"
+        aria-label={field === 'sog' ? 'Observed AIS speed history' : 'Observed AIS course history'}
+      >
+        <path d="M0 55H300" stroke="#244050" />
+        {track.map((p, i) => {
+          if (p[field] === null || p[field] === undefined) return null;
+          const prev = track[i - 1];
+          return (
+            <g key={i}>
+              {prev?.[field] != null && Date.parse(p.time) - Date.parse(prev.time) <= 1800000 && (
+                <line
+                  x1={x(prev)}
+                  y1={y(prev)}
+                  x2={x(p)}
+                  y2={y(p)}
+                  stroke="#41c4f4"
+                  strokeWidth="1"
+                />
+              )}
+              <circle cx={x(p)} cy={y(p)} r="1" fill="#41c4f4" />
+            </g>
+          );
+        })}
+      </svg>
+      <p className="micro">
+        {time(track[0].time)} to {time(track[track.length - 1].time)} · scale 0–{max.toFixed(1)}{' '}
+        {field === 'sog' ? 'knots' : 'degrees'}. Gaps over 30 minutes and missing values are not
+        connected.
+      </p>
+    </>
   );
 }
 
@@ -268,9 +300,9 @@ export default function App() {
       setJob(j);
       setNotice('');
     });
-  const remove = () =>
+  const remove = (mmsi?: string) =>
     action(async () => {
-      const primary = a?.vessels[0];
+      const primary = mmsi ? a?.vessels.find((v: Json) => v.mmsi === mmsi) : a?.vessels[0];
       if (!primary) return;
       setCounter(
         await post('/cases/' + caseId + '/counterfactual', { exclude_mmsi: primary.mmsi }),
@@ -322,7 +354,7 @@ export default function App() {
         </div>
         <div>
           <h4>
-            Attribution breakdown <span>/ 100</span>
+            Relevance contributions <span>/ 100</span>
           </h4>
           {vessel.components.map((c: Json) => (
             <div className="component" key={c.name}>
@@ -333,7 +365,7 @@ export default function App() {
               <b>{c.contribution.toFixed(1)}</b>
             </div>
           ))}
-          <p className="micro">Weighted screening score · not a probability</p>
+          <p className="micro">Investigative relevance score · not a probability of culpability.</p>
         </div>
       </div>
     </>
@@ -463,6 +495,7 @@ export default function App() {
         )}
         {a && (
           <div className="case-strip">
+            <strong>{a.data_label}</strong>
             <span>
               <FolderOpen size={14} /> CASE {caseId.slice(0, 8).toUpperCase()}
             </span>
@@ -482,7 +515,32 @@ export default function App() {
             </button>
           </div>
         )}
-        {!a && !busy && page !== 'Cases & Data' && page !== 'Settings' && (
+        {page === 'Global Map' && (
+          <GlobalIncidents
+            geography={geography}
+            select={(id) =>
+              action(async () => {
+                await load(id);
+                setPage('Overview');
+              })
+            }
+          />
+        )}
+        {a && <Workflow navigate={setPage} />}
+        {a && page === 'Overview' && (
+          <div className="classification-banner">
+            <strong>OIL CANDIDATE — CLASSIFICATION PENDING</strong>
+            <span>
+              {a.spill.area_km2.toFixed(2)} km² · {coordinate(a.spill.centroid)} ·{' '}
+              {time(a.observation_time)}
+            </span>
+            <span>Origin is a modeled uncertainty region. Pollutant identity is UNKNOWN.</span>
+            <button onClick={() => setPage('Attention & Alerts')}>
+              Review attention and response priorities
+            </button>
+          </div>
+        )}
+        {!a && !busy && page !== 'Global Map' && page !== 'Cases & Data' && page !== 'Settings' && (
           <section className="welcome">
             <div className="welcome-radar">
               <Radar size={64} />
@@ -515,226 +573,220 @@ export default function App() {
             </p>
           </section>
         )}
-        {a &&
-          (page === 'Overview' ||
-            page === 'Global Map' ||
-            page === 'AIS Correlation' ||
-            page === 'Drift & Origin') && (
-            <>
-              <div className={'dashboard-grid ' + (page === 'Global Map' ? 'global-grid' : '')}>
-                <div className="main-column">
-                  <Panel
-                    title={page === 'Global Map' ? 'Global maritime map' : 'Live investigation map'}
-                    icon={Globe2}
-                    extra={
-                      <span className="micro">
-                        {a.vessels.length} VESSELS · {a.spill.component_count} CANDIDATE
-                      </span>
-                    }
-                  >
-                    <MaritimeMap
-                      analysis={a}
-                      geography={geography}
-                      selected={selected}
-                      onSelect={setSelected}
-                      focus={focus}
-                      global={page === 'Global Map'}
-                      forecastHour={hour}
-                    />
-                  </Panel>
-                  <Panel
-                    title="Backtracking simulation"
-                    icon={Waves}
-                    extra={<span className="micro">SPILL ORIGIN · CONDITIONAL ENSEMBLE</span>}
-                  >
-                    <div className="backtrack">
-                      {[...a.origin.snapshots].reverse().map((s: Json, i: number) => (
-                        <button
-                          className="time-frame"
-                          key={i}
-                          onClick={() => {
-                            setFocus(s.center);
-                            setModal('origin');
-                          }}
-                        >
-                          <strong>T − {s.hours_before}h</strong>
-                          <MiniShape geometry={s.geometry} center={a.spill.centroid} />
-                          <span>
-                            {i === 0 ? 'Possible origin zone' : 'Modeled particle spread'}
-                          </span>
-                        </button>
-                      ))}
-                      <button className="time-frame" onClick={() => setPage('Satellite Analysis')}>
-                        <strong>T · Observed</strong>
-                        <img src={a.assets + '/mask.png'} alt="Computed segmentation mask" />
-                        <span>Detected candidate</span>
+        {a && (page === 'Overview' || page === 'AIS Correlation' || page === 'Drift & Origin') && (
+          <>
+            <div className="dashboard-grid">
+              <div className="main-column">
+                <Panel
+                  title="Investigation map"
+                  icon={Globe2}
+                  extra={
+                    <span className="micro">
+                      {a.vessels.length} VESSELS · {a.spill.component_count} CANDIDATE
+                    </span>
+                  }
+                >
+                  <MaritimeMap
+                    analysis={a}
+                    geography={geography}
+                    selected={selected}
+                    onSelect={setSelected}
+                    focus={focus}
+                    global={false}
+                    forecastHour={hour}
+                  />
+                </Panel>
+                <Panel
+                  title="Backtracking simulation"
+                  icon={Waves}
+                  extra={<span className="micro">SPILL ORIGIN · CONDITIONAL ENSEMBLE</span>}
+                >
+                  <div className="backtrack">
+                    {[...a.origin.snapshots].reverse().map((s: Json, i: number) => (
+                      <button
+                        className="time-frame"
+                        key={i}
+                        onClick={() => {
+                          setFocus(s.center);
+                          setModal('origin');
+                        }}
+                      >
+                        <strong>T − {s.hours_before}h</strong>
+                        <MiniShape geometry={s.geometry} center={a.spill.centroid} />
+                        <span>{i === 0 ? 'Possible origin zone' : 'Modeled particle spread'}</span>
                       </button>
-                    </div>
-                  </Panel>
-                  <Panel
-                    title="AIS vessel behavior analysis"
-                    icon={Ship}
-                    extra={
-                      <button className="text-button" onClick={() => setModal('vessel')}>
-                        Inspect evidence <ArrowRight size={13} />
-                      </button>
-                    }
-                  >
-                    {vesselDetails}
-                  </Panel>
-                </div>
-                <div className="right-column">
-                  <Panel
-                    title="Oil spill analysis"
-                    icon={Radar}
-                    extra={<span className="badge red">CANDIDATE</span>}
-                  >
-                    <div className="spill-overview">
-                      <div className="sar-preview">
-                        <img
-                          src={a.assets + '/satellite.png'}
-                          alt="Synthetic SAR image processed by the detector"
-                        />
-                        <img className="mask-overlay" src={a.assets + '/mask.png'} alt="" />
-                        <span>SAR / VV</span>
-                      </div>
-                      <div>
-                        <Stat label="Surface area" value={a.spill.area_km2.toFixed(2)} unit="km²" />
-                        <Stat label="Perimeter" value={a.spill.perimeter_km.toFixed(1)} unit="km" />
-                        <Stat label="Contrast" value={a.spill.contrast_db} unit="dB" />
-                        <Stat label="Oil type" value="Unconfirmed" />
-                      </div>
-                    </div>
-                    <button className="panel-link" onClick={() => setPage('Satellite Analysis')}>
-                      View segmentation & method <ArrowRight size={13} />
-                    </button>
-                  </Panel>
-                  <Panel
-                    title="Drift & origin analysis"
-                    icon={Waves}
-                    extra={<span className="badge green">90% REGION</span>}
-                  >
-                    <div className="origin-preview">
-                      <MiniShape geometry={a.origin.geometry} center={a.origin.centroid} />
-                      <div>
-                        <span className="muted">Modeled origin</span>
-                        <strong>{coordinate(a.origin.centroid)}</strong>
-                        <span className="muted">Release window · assumed</span>
-                        <b>
-                          {new Date(a.origin.release_window[0]).toISOString().slice(11, 16)}–
-                          {new Date(a.origin.release_window[1]).toISOString().slice(11, 16)} UTC
-                        </b>
-                        <small>
-                          {time(a.origin.release_window[0]).split(',')[0]} · assumed window
-                        </small>
-                      </div>
-                    </div>
-                    <div className="panel-foot">
-                      Uncertainty radius <b>{a.origin.radius90_km} km</b>
-                      <button onClick={() => setModal('origin')}>
-                        Details <ChevronRight size={12} />
-                      </button>
-                    </div>
-                  </Panel>
-                  <Panel
-                    title="Environmental forecast"
-                    icon={Layers}
-                    extra={
-                      <span className="badge amber">
-                        {a.impact.receptors.some((r: Json) => r.first_overlap_h)
-                          ? 'EXPOSURE'
-                          : 'SCREENING'}
-                      </span>
-                    }
-                  >
-                    <div className="forecast-tabs">
-                      {[6, 12, 24, 48].map((h) => (
-                        <button
-                          className={hour === h ? 'chosen' : ''}
-                          onClick={() => setHour(h)}
-                          key={h}
-                        >
-                          +{h}h
-                        </button>
-                      ))}
-                    </div>
-                    <Stat
-                      label="Particle spread (90%)"
-                      value={a.forecast.steps.find((s: Json) => s.hours === hour)?.spread90_km}
-                      unit="km"
-                    />
-                    {a.impact.receptors.slice(0, 4).map((r: Json) => (
-                      <div className="receptor" key={r.name}>
-                        <span>
-                          <i />
-                          {r.name}
-                        </span>
-                        <b>{r.first_overlap_h ? `+${r.first_overlap_h}h overlap` : 'No overlap'}</b>
-                      </div>
                     ))}
-                    <p className="micro padded">
-                      Forecast envelope overlap; not a calibrated impact probability.
-                    </p>
-                  </Panel>
-                  <Panel
-                    title="Vessel attribution & ranking"
-                    icon={Activity}
-                    extra={<span className="micro">SCREENING SCORE</span>}
-                  >
-                    <div className="ranking-list">
-                      {ranking.slice(0, 4).map((v: Json, i: number) => (
-                        <button
-                          key={v.mmsi}
-                          className={'rank-row ' + (selected === v.mmsi ? 'selected' : '')}
-                          onClick={() => setSelected(v.mmsi)}
-                        >
-                          <span className={'rank-number rank-' + i}>{i + 1}</span>
-                          <div>
-                            <strong>{v.name}</strong>
-                            <small>{v.mmsi}</small>
-                          </div>
-                          <div className="rank-score">
-                            <b>{v.score.toFixed(1)}</b>
-                            <i>
-                              <em style={{ width: v.score + '%' }} />
-                            </i>
-                          </div>
-                          <ChevronRight size={14} />
-                        </button>
-                      ))}
-                    </div>
-                    <button className="panel-link" onClick={() => switchPage('Vessel Ranking')}>
-                      Compare all {ranking.length} candidates <ArrowRight size={13} />
+                    <button className="time-frame" onClick={() => setPage('Satellite Analysis')}>
+                      <strong>T · Observed</strong>
+                      <img src={a.assets + '/mask.png'} alt="Computed segmentation mask" />
+                      <span>Detected candidate</span>
                     </button>
-                  </Panel>
-                </div>
-              </div>
-              {page === 'Drift & Origin' && (
-                <Panel title="Environmental sensitivity" icon={SlidersHorizontal}>
-                  <div className="padded">
-                    <label>
-                      Windage coefficient: {(windage * 100).toFixed(1)}%{' '}
-                      <input
-                        type="range"
-                        min="0"
-                        max="0.1"
-                        step="0.005"
-                        value={windage}
-                        onChange={(e) => setWindage(+e.target.value)}
-                      />
-                    </label>
-                    <button className="secondary" disabled={busy} onClick={run}>
-                      Recompute entire case
-                    </button>
-                    <p className="muted">
-                      Creates a new immutable run using the changed coefficient. Results update
-                      after processing completes.
-                    </p>
                   </div>
                 </Panel>
-              )}
-            </>
-          )}
+                <Panel
+                  title="AIS vessel behavior analysis"
+                  icon={Ship}
+                  extra={
+                    <button className="text-button" onClick={() => setModal('vessel')}>
+                      Inspect evidence <ArrowRight size={13} />
+                    </button>
+                  }
+                >
+                  {vesselDetails}
+                </Panel>
+              </div>
+              <div className="right-column">
+                <Panel
+                  title="Oil candidate analysis"
+                  icon={Radar}
+                  extra={<span className="badge red">CANDIDATE</span>}
+                >
+                  <div className="spill-overview">
+                    <div className="sar-preview">
+                      <img
+                        src={a.assets + '/satellite.png'}
+                        alt="Synthetic SAR image processed by the detector"
+                      />
+                      <img className="mask-overlay" src={a.assets + '/mask.png'} alt="" />
+                      <span>SAR / VV</span>
+                    </div>
+                    <div>
+                      <Stat label="Surface area" value={a.spill.area_km2.toFixed(2)} unit="km²" />
+                      <Stat label="Perimeter" value={a.spill.perimeter_km.toFixed(1)} unit="km" />
+                      <Stat label="Contrast" value={a.spill.contrast_db} unit="dB" />
+                      <Stat label="Oil type" value="Unconfirmed" />
+                    </div>
+                  </div>
+                  <button className="panel-link" onClick={() => setPage('Satellite Analysis')}>
+                    View segmentation & method <ArrowRight size={13} />
+                  </button>
+                </Panel>
+                <Panel
+                  title="Drift & origin analysis"
+                  icon={Waves}
+                  extra={<span className="badge green">90% REGION</span>}
+                >
+                  <div className="origin-preview">
+                    <MiniShape geometry={a.origin.geometry} center={a.origin.centroid} />
+                    <div>
+                      <span className="muted">Modeled origin</span>
+                      <strong>{coordinate(a.origin.centroid)}</strong>
+                      <span className="muted">Release window · assumed</span>
+                      <b>
+                        {new Date(a.origin.release_window[0]).toISOString().slice(11, 16)}–
+                        {new Date(a.origin.release_window[1]).toISOString().slice(11, 16)} UTC
+                      </b>
+                      <small>
+                        {time(a.origin.release_window[0]).split(',')[0]} · assumed window
+                      </small>
+                    </div>
+                  </div>
+                  <div className="panel-foot">
+                    Uncertainty radius <b>{a.origin.radius90_km} km</b>
+                    <button onClick={() => setModal('origin')}>
+                      Details <ChevronRight size={12} />
+                    </button>
+                  </div>
+                </Panel>
+                <Panel
+                  title="Environmental forecast"
+                  icon={Layers}
+                  extra={
+                    <span className="badge amber">
+                      {a.impact.receptors.some((r: Json) => r.first_overlap_h)
+                        ? 'EXPOSURE'
+                        : 'SCREENING'}
+                    </span>
+                  }
+                >
+                  <div className="forecast-tabs">
+                    {[6, 12, 24, 48].map((h) => (
+                      <button
+                        className={hour === h ? 'chosen' : ''}
+                        onClick={() => setHour(h)}
+                        key={h}
+                      >
+                        +{h}h
+                      </button>
+                    ))}
+                  </div>
+                  <Stat
+                    label="Particle spread (90%)"
+                    value={a.forecast.steps.find((s: Json) => s.hours === hour)?.spread90_km}
+                    unit="km"
+                  />
+                  {a.impact.receptors.slice(0, 4).map((r: Json) => (
+                    <div className="receptor" key={r.name}>
+                      <span>
+                        <i />
+                        {r.name}
+                      </span>
+                      <b>{r.first_overlap_h ? `+${r.first_overlap_h}h overlap` : 'No overlap'}</b>
+                    </div>
+                  ))}
+                  <p className="micro padded">
+                    Forecast envelope overlap; not a calibrated impact probability.
+                  </p>
+                </Panel>
+                <Panel
+                  title="Vessel attribution & ranking"
+                  icon={Activity}
+                  extra={<span className="micro">INVESTIGATIVE RELEVANCE SCORE</span>}
+                >
+                  <div className="ranking-list">
+                    {ranking.slice(0, 4).map((v: Json, i: number) => (
+                      <button
+                        key={v.mmsi}
+                        className={'rank-row ' + (selected === v.mmsi ? 'selected' : '')}
+                        onClick={() => setSelected(v.mmsi)}
+                      >
+                        <span className={'rank-number rank-' + i}>{i + 1}</span>
+                        <div>
+                          <strong>{v.name}</strong>
+                          <small>{v.mmsi}</small>
+                        </div>
+                        <div className="rank-score">
+                          <b>{v.score.toFixed(1)}</b>
+                          <i>
+                            <em style={{ width: v.score + '%' }} />
+                          </i>
+                        </div>
+                        <ChevronRight size={14} />
+                      </button>
+                    ))}
+                  </div>
+                  <button className="panel-link" onClick={() => switchPage('Vessel Ranking')}>
+                    Compare all {ranking.length} candidates <ArrowRight size={13} />
+                  </button>
+                </Panel>
+              </div>
+            </div>
+            {page === 'Drift & Origin' && (
+              <Panel title="Environmental sensitivity" icon={SlidersHorizontal}>
+                <div className="padded">
+                  <label>
+                    Windage coefficient: {(windage * 100).toFixed(1)}%{' '}
+                    <input
+                      type="range"
+                      min="0"
+                      max="0.1"
+                      step="0.005"
+                      value={windage}
+                      onChange={(e) => setWindage(+e.target.value)}
+                    />
+                  </label>
+                  <button className="secondary" disabled={busy} onClick={run}>
+                    Recompute entire case
+                  </button>
+                  <p className="muted">
+                    Creates a new immutable run using the changed coefficient. Results update after
+                    processing completes.
+                  </p>
+                </div>
+              </Panel>
+            )}
+          </>
+        )}
         {a && page === 'Satellite Analysis' && (
           <div className="analysis-layout">
             <Panel title="Satellite preprocessing & segmentation" icon={Satellite}>
@@ -787,7 +839,7 @@ export default function App() {
         {a && page === 'Vessel Ranking' && (
           <>
             <div className="toolbar">
-              <p>{a.attribution.score_type}</p>
+              <p>INVESTIGATIVE RELEVANCE SCORE — Not a probability of culpability.</p>
               <button className="secondary" onClick={() => setModal('vessel')}>
                 Why this vessel?
               </button>
@@ -796,7 +848,7 @@ export default function App() {
                   <RefreshCw size={14} /> Restore all candidates
                 </button>
               ) : (
-                <button className="secondary" onClick={remove}>
+                <button className="secondary" onClick={() => remove()}>
                   Remove primary candidate
                 </button>
               )}
@@ -808,7 +860,7 @@ export default function App() {
                     <tr>
                       <th>Rank</th>
                       <th>Vessel / MMSI</th>
-                      <th>Screening score</th>
+                      <th>Investigative relevance score</th>
                       <th>Origin distance</th>
                       <th>Minimum speed</th>
                       <th>Course change</th>
@@ -857,7 +909,7 @@ export default function App() {
             </div>
           </>
         )}
-        {a && page === 'Dark Vessels' && (
+        {a && page === 'SAR-AIS Screening' && (
           <>
             <div className="metric-row">
               <Stat label="Bright SAR returns" value={a.dark.sar_returns.length} />
@@ -915,65 +967,25 @@ export default function App() {
             </Panel>
           </>
         )}
-        {a && page === 'Evidence Graph' && (
-          <Panel
-            title="Investigation evidence graph"
-            icon={Network}
-            extra={<span className="micro">SELECT A VESSEL TO INSPECT</span>}
-          >
-            <div className="graph">
-              <div className="graph-source">
-                <Satellite />
-                <strong>SAR observation</strong>
-                <small>{time(a.observation_time)}</small>
-              </div>
-              <div className="graph-line" />
-              <div className="graph-source">
-                <Waves />
-                <strong>{a.spill.area_km2.toFixed(2)} km² candidate → modeled origin</strong>
-                <small>Segmentation + conditional hindcast</small>
-              </div>
-              <div className="graph-branches">
-                {a.evidence.nodes
-                  .filter((n: Json) => n.kind === 'vessel')
-                  .map((n: Json) => (
-                    <button
-                      key={n.id}
-                      onClick={() => {
-                        setSelected(n.id);
-                        setModal('vessel');
-                      }}
-                    >
-                      <Ship size={20} />
-                      <strong>{n.label}</strong>
-                      <span>{n.score}/100</span>
-                      <small>{a.evidence.edges.find((e: Json) => e.target === n.id)?.label}</small>
-                    </button>
-                  ))}
-              </div>
-            </div>
-            <div className="evidence-columns padded">
-              <div>
-                <h3>Supporting evidence</h3>
-                {a.evidence.supporting.map((s: string) => (
-                  <p key={s} className="evidence-line">
-                    <Check size={14} />
-                    {s}
-                  </p>
-                ))}
-              </div>
-              <div>
-                <h3>Contradicting / limiting evidence</h3>
-                {a.evidence.contradicting.map((s: string) => (
-                  <p key={s} className="limitation">
-                    <TriangleAlert size={14} />
-                    {s}
-                  </p>
-                ))}
-              </div>
-            </div>
-          </Panel>
-        )}
+        {a &&
+          [
+            'Evidence Graph',
+            'Verification',
+            'Ecological Exposure',
+            'Response Twin',
+            'Attention & Alerts',
+          ].includes(page) && (
+            <Intelligence
+              key={a.run_id}
+              a={a}
+              page={page}
+              geography={geography}
+              onVessel={(id) => {
+                setSelected(id);
+                setModal('vessel');
+              }}
+            />
+          )}
         {a && page === 'Timeline' && (
           <Panel title="Forensic investigation timeline" icon={Clock3}>
             <div className="timeline">
@@ -1097,6 +1109,12 @@ export default function App() {
                 <a className="secondary" href={a.assets + '/evidence.zip'}>
                   <ArrowDownToLine size={16} /> Full evidence ZIP
                 </a>
+                <a
+                  className="secondary"
+                  href={`/api/v1/cases/${a.case_id}/response-evidence?run_id=${a.run_id}`}
+                >
+                  <ArrowDownToLine size={16} /> Evidence + response scenarios ZIP
+                </a>
               </div>
             </div>
             <Panel title="Scientific traceability" icon={ShieldCheck}>
@@ -1203,15 +1221,21 @@ export default function App() {
                         ? 'Origin model & uncertainty'
                         : 'Scientific provenance'}
               </h2>
-              <button className="icon-button" onClick={() => setModal(null)}>
+              <button
+                className="icon-button"
+                aria-label="Close dialog"
+                onClick={() => setModal(null)}
+              >
                 <X size={19} />
               </button>
             </div>
             {modal === 'vessel' && vessel && (
               <div className="padded">
-                {vesselDetails}
+                <Dossier a={a!} v={vessel} />
                 <h3>Speed over time</h3>
-                <Spark values={vessel.track.map((p: Json) => p.sog || 0)} />
+                <Spark track={vessel.track} field="sog" />
+                <h3>Course over time</h3>
+                <Spark track={vessel.track} field="cog" />
                 <p className="micro">
                   Chronological AIS speed observations in knots. Missing intervals are not directly
                   observed.
@@ -1226,12 +1250,12 @@ export default function App() {
                 <button
                   className="secondary"
                   onClick={() => {
-                    remove();
+                    remove(vessel.mmsi);
                     setModal(null);
                     setPage('Vessel Ranking');
                   }}
                 >
-                  Exclude primary candidate & rerank
+                  Exclude this candidate & rerank
                 </button>
               </div>
             )}
@@ -1408,6 +1432,12 @@ function GeographyForm({ onDone }: { onDone: () => Promise<void> }) {
             'eez',
             'coastline',
             'protected_area',
+            'coral',
+            'mangrove',
+            'seagrass',
+            'habitat',
+            'species_range',
+            'sensitive_ecosystem',
             'fishery',
             'infrastructure',
             'shipping_corridor',
@@ -1430,4 +1460,3 @@ function GeographyForm({ onDone }: { onDone: () => Promise<void> }) {
     </form>
   );
 }
-

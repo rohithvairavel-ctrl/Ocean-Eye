@@ -7,6 +7,8 @@ from shapely.geometry import shape, Point
 
 
 def timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("Timestamp must be an ISO 8601 string with timezone")
     dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         raise ValueError("Timestamps must include a timezone")
@@ -14,7 +16,26 @@ def timestamp(value):
 
 
 def validate_environment(env, observation, release):
+    if not isinstance(env, dict):
+        raise ValueError("Environmental input must be a JSON object")
+    if env.get("units") != "m/s":
+        raise ValueError("Environmental units must be m/s")
+    coverage = env.get("spatial_coverage")
+    if (
+        not isinstance(coverage, list)
+        or len(coverage) != 4
+        or any(not isinstance(v, (int, float)) or not np.isfinite(v) for v in coverage)
+        or not (
+            -180 <= coverage[0] < coverage[2] <= 180
+            and -90 <= coverage[1] < coverage[3] <= 90
+        )
+    ):
+        raise ValueError(
+            "Environmental spatial_coverage must be [west,south,east,north] in WGS84"
+        )
     records = env.get("records", [])
+    if not isinstance(records, list):
+        raise ValueError("Environmental records must be a list")
     if len(records) < 2:
         raise ValueError("At least two time-indexed forcing records are required")
     required = [
@@ -26,11 +47,20 @@ def validate_environment(env, observation, release):
         "wind_sigma_ms",
     ]
     for row in records:
-        timestamp(row["time"])
-        if any(k not in row or not np.isfinite(row[k]) for k in required):
+        if not isinstance(row, dict):
+            raise ValueError("Each environmental record must be an object")
+        timestamp(row.get("time"))
+        if any(
+            k not in row
+            or not isinstance(row[k], (int, float))
+            or not np.isfinite(row[k])
+            for k in required
+        ):
             raise ValueError("Invalid environmental forcing values")
         if row["current_sigma_ms"] < 0 or row["wind_sigma_ms"] < 0:
             raise ValueError("Uncertainty must be non-negative")
+    if len({timestamp(r["time"]) for r in records}) != len(records):
+        raise ValueError("Environmental record timestamps must be unique")
     records.sort(key=lambda r: timestamp(r["time"]))
     first, last = timestamp(records[0]["time"]), timestamp(records[-1]["time"])
     if first > timestamp(release[0]) or last < timestamp(observation) + timedelta(
@@ -102,6 +132,7 @@ def simulate(spill, env, observation, release, seed=428, particles=500, windage=
             snapshots.append(
                 {
                     "hours_before": round(age, 2),
+                    "particles": pts[::5].tolist(),
                     "geometry": ellipse(pts),
                     "center": pts.mean(axis=0).tolist(),
                 }
@@ -166,7 +197,7 @@ def simulate(spill, env, observation, release, seed=428, particles=500, windage=
         "steps": forecasts,
         "method": "Ensemble advection + windage + diffusion",
         "uncertainty": "Conditional particle spread, not oil mass or shoreline-arrival probability",
-        "parameters": origin["parameters"],
+        "parameters": {**origin["parameters"], "diffusivity_m2s": 15},
     }
 
 
@@ -182,8 +213,37 @@ def impact(forecast, receptors):
             {
                 "name": f["properties"].get("name", "Unnamed"),
                 "kind": f["properties"].get("kind", "unknown"),
-                "source_type": f["properties"].get("source_type", "REAL"),
+                "source_type": f["properties"].get("source_type", "UNKNOWN"),
                 "first_overlap_h": min(hits) if hits else None,
+                "first_overlap_time": next(
+                    (
+                        step["time"]
+                        for step in forecast["steps"]
+                        if step["hours"] in hits
+                    ),
+                    None,
+                ),
+                "source": f["properties"].get("source", "Not recorded"),
+                "version": f["properties"].get("version", "Not recorded"),
+                "coordinates": list(
+                    (
+                        g.intersection(
+                            shape(
+                                next(
+                                    step["geometry"]
+                                    for step in forecast["steps"]
+                                    if step["hours"] == min(hits)
+                                )
+                            )
+                        )
+                        if hits
+                        else g
+                    )
+                    .representative_point()
+                    .coords[0]
+                ),
+                "status": "POTENTIAL EXPOSURE" if hits else "NO SAMPLED OVERLAP",
+                "uncertainty": "First overlapping forecast sample; onset may occur between samples. Not confirmed damage.",
                 "distance48_km": round(
                     distance(
                         forecast["steps"][-1]["center"],

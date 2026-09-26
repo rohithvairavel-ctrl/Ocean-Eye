@@ -219,7 +219,11 @@ def analyze(tracks, origin, observation):
         score = 100 * sum(components[k] * weights[k] for k in weights)
         support = []
         contradictions = []
-        if proximity > 0.4:
+        if not relevant:
+            contradictions.append(
+                "No AIS observations during the assumed release window; nearest approach uses observations outside that window"
+            )
+        elif proximity > 0.4:
             support.append(
                 f"Observed {dist:.2f} km from model origin during release window"
             )
@@ -262,6 +266,11 @@ def analyze(tracks, origin, observation):
                 "supporting": support,
                 "contradicting": contradictions,
                 "nearest_km": round(dist, 2),
+                "nearest_time": nearest["time"],
+                "release_window_observations": len(relevant),
+                "nearest_basis": (
+                    "RELEASE_WINDOW" if relevant else "OUTSIDE_RELEASE_WINDOW"
+                ),
                 "baseline_speed_kn": round(baseline, 2),
                 "minimum_speed_kn": round(minimum, 2),
                 "course_change_deg": round(course_delta, 2),

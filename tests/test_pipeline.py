@@ -229,3 +229,232 @@ def test_historical_ais_utc_timestamp(tmp_path):
     tracks, quality = ais.load_ais(p)
     assert tracks["900000001"][0]["time"].endswith("+00:00")
     assert quality["accepted_rows"] == 2
+
+
+# Response intelligence preserves the original physical pipeline and its uncertainty.
+def test_intelligence_and_dossier(client, analysis):
+    prefix = f"/api/v1/cases/{analysis['case_id']}"
+    response = client.get(prefix + "/intelligence")
+    assert response.status_code == 200
+    view = response.json()
+    assert view["classification"]["status"] == "UNAVAILABLE"
+    assert view["classification"]["calibrated_confidence"] is None
+    assert view["incident"]["pollutant"] == "UNKNOWN"
+    assert "UNAVAILABLE" in view["ecology"]["species_assessment"]
+    assert view["alerts"]
+    for event in view["alerts"]:
+        assert event["rule_id"] and event["data_used"] and event["why"]
+        assert event["run_id"] == analysis["run_id"]
+        assert event["delivery"]["external_notifications"] == "NOT_CONFIGURED"
+    nodes = {n["id"] for n in view["evidence"]["nodes"]}
+    assert {
+        "sar",
+        "preprocessing",
+        "segmentation",
+        "origin",
+        "forecast",
+        "ecology",
+        "response",
+        "proof",
+    } <= nodes
+    assert all(
+        e["source"] in nodes and e["target"] in nodes for e in view["evidence"]["edges"]
+    )
+    vessel = analysis["vessels"][0]
+    dossier = client.get(prefix + f"/vessels/{vessel['mmsi']}/dossier").json()
+    assert dossier["record"]["components"] == vessel["components"]
+    assert dossier["identity"]["mmsi"]["source"]["sha256"]
+    assert dossier["external_metadata"]["ownership"] is None
+    assert client.get(prefix + "/vessels/000000000/dossier").status_code == 404
+
+
+def test_response_timing_is_not_removal_physics(client, analysis):
+    from backend.response import ScenarioInput, evaluate
+
+    spec = ScenarioInput(run_id=analysis["run_id"], name="Baseline", kind="no_action")
+    baseline = evaluate(analysis, spec)
+    assert baseline["baseline"]["receptor_exposure"] == analysis["impact"]["receptors"]
+    assert baseline["intervention"]["receptor_exposure_after"] is None
+    assert baseline["asset"] is None and baseline["travel_km"] is None
+    spec = ScenarioInput(
+        run_id=analysis["run_id"],
+        name="Dispatch",
+        kind="dispatch",
+        departure=(80, 12),
+        speed_kn=10,
+    )
+    immediate = evaluate(analysis, spec)
+    delayed = evaluate(
+        analysis, spec.model_copy(update={"delay_h": 12, "kind": "delayed_response"})
+    )
+    assert delayed["arrival_window_h"][0] == pytest.approx(
+        immediate["arrival_window_h"][0] + 12, abs=0.002
+    )
+    assert delayed["margin_to_target_h"] == pytest.approx(
+        immediate["margin_to_target_h"] - 12, abs=0.002
+    )
+    assert immediate["arrival_window_h"][0] <= immediate["arrival_window_h"][1]
+    assert immediate["intervention"]["removal_efficiency"] is None
+    assert immediate["asset"]["availability"] == "UNVERIFIED"
+    assert immediate["analysis_hash"] == analysis["analysis_hash"]
+
+
+def test_scenario_persistence_export_and_run_isolation(client, analysis):
+    prefix = f"/api/v1/cases/{analysis['case_id']}"
+    before = client.get(prefix + "/analysis").json()
+    spec = {
+        "run_id": analysis["run_id"],
+        "name": "Delayed planning",
+        "kind": "delayed_response",
+        "departure": [80, 12],
+        "delay_h": 48,
+    }
+    response = client.post(prefix + "/scenarios", json=spec)
+    assert response.status_code == 200, response.text
+    value = response.json()
+    assert value in client.get(prefix + "/scenarios").json()
+    exported = client.get("/api/v1/scenarios/" + value["id"] + "/export").json()
+    assert (
+        hashlib.sha256(storage.canonical(exported["scenario"]).encode()).hexdigest()
+        == exported["sha256"]
+    )
+    assert any(
+        json.loads(e["details"]).get("scenario_id") == value["id"]
+        for e in exported["audit"]
+    )
+    view = client.get(prefix + "/intelligence").json()
+    assert any(e["rule_id"] == "response-window-" + value["id"] for e in view["alerts"])
+    assert any(n["id"] == value["id"] for n in view["evidence"]["nodes"])
+    assert client.get(prefix + "/analysis").json() == before
+    other = client.post("/api/v1/cases/demo").json()
+    assert (
+        client.post(f"/api/v1/cases/{other['id']}/scenarios", json=spec).status_code
+        == 404
+    )
+    assert client.get(f"/api/v1/cases/{other['id']}/intelligence").status_code == 409
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"departure": [200, 0]},
+        {"departure": None},
+        {"speed_kn": 0},
+        {"speed_uncertainty_fraction": 1},
+        {"target": [0, 91]},
+        {"target_horizon_h": 36},
+    ],
+)
+def test_invalid_response_inputs(client, analysis, update):
+    spec = {
+        "run_id": analysis["run_id"],
+        "name": "Invalid",
+        "kind": "dispatch",
+        "departure": [80, 12],
+        **update,
+    }
+    assert (
+        client.post(
+            f"/api/v1/cases/{analysis['case_id']}/scenarios", json=spec
+        ).status_code
+        == 422
+    )
+
+
+def test_classification_contract_rejects_unfounded_confidence():
+    from backend.classification import ClassificationResult
+    from pydantic import ValidationError
+
+    for value in (
+        {"calibrated_confidence": 0.99},
+        {"predicted_class": "oil"},
+        {"status": "SCREENING", "probabilities": {"oil": 1}},
+        {"metrics": {"accuracy": 0.99}},
+    ):
+        with pytest.raises(ValidationError):
+            ClassificationResult(**value)
+    assert ClassificationResult().model_dump()["metrics"] is None
+
+
+def test_ecology_provenance_and_no_damage_claim(analysis):
+    from backend.intelligence import derive
+
+    ecology = derive(analysis)["ecology"]
+    for row in ecology["receptors"]:
+        assert row["source"] and row["version"]
+        assert row["status"] in ("POTENTIAL EXPOSURE", "NO SAMPLED OVERLAP")
+        assert bool(row["first_overlap_time"]) == (row["first_overlap_h"] is not None)
+    empty = drift.impact(analysis["forecast"], {"features": []})
+    assert empty["receptors"] == []
+    assert empty["level"] == "NO LOADED RECEPTOR OVERLAP"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        "non_object",
+        "string_value",
+        "missing_time",
+        "duplicate_time",
+        "units",
+        "coverage",
+    ],
+)
+def test_environment_validation_is_actionable(analysis, mutate):
+    import copy
+
+    env = copy.deepcopy(analysis["environment"])
+    if mutate == "non_object":
+        env = []
+    elif mutate == "string_value":
+        env["records"][0]["wind_east_ms"] = "unknown"
+    elif mutate == "missing_time":
+        del env["records"][0]["time"]
+    elif mutate == "duplicate_time":
+        env["records"][1]["time"] = env["records"][0]["time"]
+    elif mutate == "units":
+        env["units"] = "knots"
+    elif mutate == "coverage":
+        env["spatial_coverage"] = [80, 12]
+    with pytest.raises(ValueError):
+        drift.validate_environment(
+            env, analysis["observation_time"], analysis["origin"]["release_window"]
+        )
+
+
+def test_legacy_fixture_is_archived_without_deleting_evidence(client, analysis):
+    case = client.post("/api/v1/cases/demo").json()
+    with storage.connect() as db:
+        db.execute(
+            "UPDATE cases SET name=? WHERE id=?",
+            ("Upload integration test", case["id"]),
+        )
+    storage.init()
+    assert storage.get_case(case["id"])["config"]["archived"]
+    assert all(c["id"] != case["id"] for c in client.get("/api/v1/cases").json())
+    assert all(c["id"] != case["id"] for c in client.get("/api/v1/incidents").json())
+    assert storage.events(case["id"])[-1]["action"] == "legacy_fixture_archived"
+    assert client.get("/api/v1/cases/" + case["id"]).status_code == 200
+
+
+def test_response_evidence_supplement_keeps_original(client, analysis):
+    import io
+
+    response = client.get(
+        f"/api/v1/cases/{analysis['case_id']}/response-evidence?run_id={analysis['run_id']}"
+    )
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as package:
+        for line in package.read("checksums.sha256").decode().splitlines():
+            digest, name = line.split("  ", 1)
+            assert hashlib.sha256(package.read(name)).hexdigest() == digest
+        original = (
+            DATA / "cases" / analysis["case_id"] / analysis["run_id"] / "evidence.zip"
+        )
+        assert package.read("original-evidence.zip") == original.read_bytes()
+        for scenario in json.loads(package.read("response-scenarios.json")):
+            digest = scenario.pop("sha256")
+            assert (
+                hashlib.sha256(storage.canonical(scenario).encode()).hexdigest()
+                == digest
+            )

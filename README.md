@@ -122,3 +122,13 @@ Servers bind to loopback. Cross-origin writes are rejected. Uploaded filenames c
 ## Avoiding startup connection errors
 
 Use `npm run dev` to start both the backend and frontend. Keep its terminal open while presenting. The launcher verifies service health, reuses an existing OCEAN-EYE service, and starts a missing service. `npm run dev:frontend` intentionally starts only the dashboard and needs a separate backend. If a browser was opened before startup finished, refresh it after the launcher prints **OCEAN-EYE ready**.
+
+## Response intelligence milestone
+
+The interface now follows Detect → Verify → Reconstruct → Attribute → Predict → Protect → Respond → Prove. Open **Verification** for classifier availability and pollutant evidence requirements; **Ecological Exposure** for dataset/version-tagged potential overlap; **Attention & Alerts** for rule-traceable findings; and **Response Twin** for immutable planning scenarios. Vessel dossiers include observed speed/course history, contribution values/weights, supporting and contrary evidence, and AIS input provenance.
+
+Map layers are independently selectable. Playback scrubs saved hindcast samples, the observation, and forecast horizons. AIS markers use actual reports within 30 minutes of the selected time; future vessel motion is not synthesized. The modeled origin is a region, not a known release point. Global Map shows only saved cases.
+
+Response scenarios compare no action, boom placement, dispatch, interception and delayed response using geodesic travel, assumed speed uncertainty, delay and setup time. Routes are not navigationally validated. Removal efficiency and post-intervention exposure remain **NOT MODELED**. Scenario JSON includes an integrity hash and audit references. Reports also offers **Evidence + response scenarios ZIP**, preserving the original PDF/evidence package alongside run-bound planning records and an export-time audit snapshot.
+
+Restart the development server after backend edits; frontend edits refresh automatically. Run `npm run dev` from this repository, then open http://127.0.0.1:5173.

@@ -34,8 +34,32 @@ def init():
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, case_id TEXT NOT NULL, created TEXT NOT NULL, state TEXT NOT NULL, stage TEXT, result TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT NOT NULL, time TEXT NOT NULL, action TEXT NOT NULL, details TEXT NOT NULL, previous_hash TEXT, hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS geography(id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL, version TEXT NOT NULL, source_type TEXT NOT NULL, jurisdiction TEXT, status TEXT, geometry TEXT NOT NULL, properties TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS scenarios(id TEXT PRIMARY KEY, case_id TEXT NOT NULL, run_id TEXT NOT NULL, created TEXT NOT NULL, payload TEXT NOT NULL, hash TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS geography_name ON geography(name COLLATE NOCASE);
         """
+        )
+
+    # Archive only the known legacy integration fixture; preserve all runs and evidence.
+    archived = []
+    with connect() as db:
+        for row in db.execute(
+            "SELECT id,config FROM cases WHERE name='Upload integration test'"
+        ).fetchall():
+            cfg = json.loads(row["config"])
+            if not cfg.get("archived"):
+                cfg["archived"] = True
+                cfg["archive_reason"] = (
+                    "Legacy integration fixture hidden from operational inventory"
+                )
+                db.execute(
+                    "UPDATE cases SET config=? WHERE id=?", (canonical(cfg), row["id"])
+                )
+                archived.append(row["id"])
+    for case_id in archived:
+        audit(
+            case_id,
+            "legacy_fixture_archived",
+            {"reason": "Operational inventory cleanup; evidence retained"},
         )
 
 
