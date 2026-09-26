@@ -13,3 +13,5 @@ datasets/environment/*
 tmp/
 
 *.tsbuildinfo
+
+.env

@@ -21,6 +21,7 @@ import {
   Radar,
   RefreshCw,
   Satellite,
+  SatelliteDish,
   Search,
   Settings2,
   ShieldCheck,
@@ -33,6 +34,7 @@ import {
 import { api, post, Json, time, coordinate } from './api';
 import MaritimeMap from './MaritimeMap';
 import { Workflow, Dossier, GlobalIncidents, Intelligence } from './Intelligence';
+import CopernicusMonitor from './Copernicus';
 
 const nav = [
   ['Overview', Eye],
@@ -46,6 +48,7 @@ const nav = [
   ['Ecological Exposure', Waves],
   ['Response Twin', Anchor],
   ['Attention & Alerts', TriangleAlert],
+  ['Copernicus Watch', SatelliteDish],
   ['Evidence Graph', Network],
   ['Timeline', Clock3],
   ['Cases & Data', FolderOpen],
@@ -414,6 +417,11 @@ export default function App() {
           <span className="live-dot" />
           {health ? 'System online' : 'Connecting'}
         </div>
+        {health && (
+          <span className={'badge ' + (health.copernicus_configured ? 'green' : 'amber')} title="Copernicus Sentinel-1 live monitor mode">
+            {health.copernicus_configured ? 'COPERNICUS LIVE' : 'COPERNICUS DEMO'}
+          </span>
+        )}
         <button
           className="icon-button"
           title="Presentation mode"
@@ -1000,6 +1008,7 @@ export default function App() {
             </div>
           </Panel>
         )}
+        {page === 'Copernicus Watch' && <CopernicusMonitor />}
         {page === 'Cases & Data' && (
           <>
             <div className="toolbar">

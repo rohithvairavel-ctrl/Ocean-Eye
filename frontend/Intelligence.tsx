@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, post, Json, time, coordinate } from './api';
 import MaritimeMap from './MaritimeMap';
+import { NextBestObservation } from './Copernicus';
 
 export function Workflow({ navigate }: { navigate: (s: string) => void }) {
   const stages = [
@@ -177,7 +178,8 @@ export function Intelligence({
   const [data, setData] = useState<Json | null>(null),
     [error, setError] = useState(''),
     [scenarios, setScenarios] = useState<Json[]>([]),
-    [node, setNode] = useState<string>('sar');
+    [node, setNode] = useState<string>('sar'),
+    [watchNotice, setWatchNotice] = useState('');
   const refresh = () =>
     Promise.all([
       api(`/cases/${a.case_id}/intelligence`),
@@ -353,6 +355,16 @@ export function Intelligence({
         Rule-based findings anchored to this observation: {time(a.observation_time)}. External
         notifications are not configured.
       </p>
+      <NextBestObservation
+        caseId={a.case_id}
+        runId={a.run_id}
+        onWatchCreated={(name) => setWatchNotice(`Added "${name}" to the Copernicus watch list.`)}
+      />
+      {watchNotice && (
+        <p className="micro" style={{ color: '#60dab6' }}>
+          {watchNotice}
+        </p>
+      )}
       {data.alerts.map((e: Json) => (
         <article className="intelligence-block" key={e.id}>
           <span className={'severity ' + e.severity}>{e.severity}</span>

@@ -36,6 +36,21 @@ def init():
         CREATE TABLE IF NOT EXISTS geography(id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL, version TEXT NOT NULL, source_type TEXT NOT NULL, jurisdiction TEXT, status TEXT, geometry TEXT NOT NULL, properties TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS scenarios(id TEXT PRIMARY KEY, case_id TEXT NOT NULL, run_id TEXT NOT NULL, created TEXT NOT NULL, payload TEXT NOT NULL, hash TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS geography_name ON geography(name COLLATE NOCASE);
+        CREATE TABLE IF NOT EXISTS watch_areas(
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, created TEXT NOT NULL,
+            center_lon REAL NOT NULL, center_lat REAL NOT NULL, radius_km REAL NOT NULL,
+            interval_minutes INTEGER NOT NULL, status TEXT NOT NULL, source TEXT NOT NULL,
+            case_id TEXT, run_id TEXT, note TEXT,
+            last_checked TEXT, last_status TEXT, last_message TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS observations(
+            id TEXT PRIMARY KEY, watch_id TEXT NOT NULL, stac_id TEXT NOT NULL, collection TEXT NOT NULL,
+            acquired TEXT, created TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
+            artifact TEXT, sha256 TEXT, provenance TEXT NOT NULL,
+            UNIQUE(watch_id, stac_id)
+        );
+        CREATE INDEX IF NOT EXISTS observations_watch ON observations(watch_id);
         """
         )
 

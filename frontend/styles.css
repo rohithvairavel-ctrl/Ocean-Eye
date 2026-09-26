@@ -2185,3 +2185,57 @@ td small {
 .map-wrap .map-time {
   max-width: calc(100% - 24px);
 }
+
+/* Copernicus live-monitor: reuses the existing badge/severity/table language above. */
+.copernicus-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #365062;
+  background: #10222c;
+  margin: 10px 0 14px;
+}
+.copernicus-summary.live {
+  border-color: #26735966;
+  background: #134b3822;
+}
+.copernicus-summary.demo {
+  border-color: #71562f66;
+  background: #b77c1512;
+}
+.copernicus-pill {
+  display: inline-block;
+  padding: 3px 8px;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  border-radius: 3px;
+  border: 1px solid #537087;
+  color: #aac4d6;
+}
+.copernicus-pill.ok {
+  color: #60dab6;
+  border-color: #26735966;
+}
+.copernicus-pill.auth,
+.copernicus-pill.pending {
+  color: #f4dc88;
+  border-color: #71562f66;
+}
+.copernicus-pill.offline,
+.copernicus-pill.error {
+  color: #ec9299;
+  border-color: #822b3b77;
+}
+.watch-actions {
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+.watch-area-form {
+  max-width: 520px;
+}
+.next-observation {
+  margin: 14px 0 20px;
+}

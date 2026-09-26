@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .config import DATA, ROOT, VERSION
-from . import storage, datasets, engine, ais
+from . import storage, datasets, engine, ais, copernicus
 from .drift import timestamp
 
 pool = ThreadPoolExecutor(max_workers=2)
@@ -25,13 +25,21 @@ async def lifespan(app):
         db.execute(
             "UPDATE runs SET state='FAILED',error='Server stopped before completion; rerun this case' WHERE state='RUNNING'"
         )
-    yield
+    copernicus.start_monitor()
+    try:
+        yield
+    finally:
+        await copernicus.stop_monitor()
 
 
 app = FastAPI(title="OCEAN-EYE", version="1.0.0", lifespan=lifespan)
 from .response_api import router as response_router
+from .copernicus_api import router as copernicus_router
+from .next_observation_api import router as next_observation_router
 
 app.include_router(response_router)
+app.include_router(copernicus_router)
+app.include_router(next_observation_router)
 
 
 @app.middleware("http")
@@ -71,6 +79,7 @@ def health():
         "trained_oil_model": False,
         "database": "SQLite",
         "geospatial_engine": "Rasterio / PyProj / Shapely",
+        "copernicus_configured": copernicus.credentials_configured(),
     }
 
 
