@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowDownToLine, FileText, Plus, TriangleAlert } from 'lucide-react';
-import { Json, api, coordinate, shortTime, time } from './api';
+import { Json, api, coordinate, overlapTime, shortTime, time } from './api';
 import MaritimeMap from './MaritimeMap';
 import { provider } from './LiveData';
 import { Metric, PageHeader, Section, StateBlock, Status, Tag } from './ui';
@@ -258,8 +258,8 @@ export function Timeline({ a, truth, live }: { a: Json; truth: Json | null; live
     ...a.timeline.map((e: Json) => ({ ...e, kind: e.type === 'observation' ? 'OBSERVED' : e.type === 'assumption' ? 'ASSUMED' : 'OBSERVED' })),
     ...a.forecast.steps.map((s: Json) => ({ time: s.time, event: `Forecast envelope +${s.hours} h (90% spread ${s.spread90_km} km)`, kind: 'PREDICTED' })),
     ...a.impact.receptors
-      .filter((r: Json) => r.first_overlap_time)
-      .map((r: Json) => ({ time: r.first_overlap_time, event: `Potential exposure: ${r.name}`, kind: 'PREDICTED' })),
+      .filter((r: Json) => overlapTime(a, r))
+      .map((r: Json) => ({ time: overlapTime(a, r), event: `Potential exposure: ${r.name}`, kind: 'PREDICTED' })),
     { time: a.created, event: 'Investigation run completed and evidence package hashed', kind: 'RECORDED' },
     ...(truth?.challenged ? [{ time: truth.challenged_at, event: `TruthLoop challenge recorded — stability ${truth.stability.state.toLowerCase()}`, kind: 'RECORDED' }] : []),
     ...(live?.events || [])

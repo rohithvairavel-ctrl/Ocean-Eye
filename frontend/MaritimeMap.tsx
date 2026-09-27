@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Crosshair, Layers, Minus, Pause, Play, Plus, X } from 'lucide-react';
-import { Json, coordinate, time, shortTime } from './api';
+import { Json, coordinate, overlapTime, time, shortTime } from './api';
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
 import markerShadow from 'leaflet/dist/images/marker-shadow.png';
@@ -573,7 +573,7 @@ export default function MaritimeMap({
               <dl>
                 <dt>Category</dt><dd>{String(inspect.data.kind).replace('_', ' ')}</dd>
                 <dt>First potential exposure</dt>
-                <dd>{inspect.data.first_overlap_time ? `${time(inspect.data.first_overlap_time)} (+${inspect.data.first_overlap_h} h)` : 'No sampled overlap'}</dd>
+                <dd>{overlapTime(a, inspect.data) ? `${time(overlapTime(a, inspect.data)!)} (+${inspect.data.first_overlap_h} h)` : 'No sampled overlap'}</dd>
                 <dt>Source</dt><dd>{inspect.data.source} · {inspect.data.source_type}</dd>
               </dl>
               <p className="inspector-note">{inspect.data.uncertainty || 'Overlap is potential exposure, not confirmed damage.'}</p>

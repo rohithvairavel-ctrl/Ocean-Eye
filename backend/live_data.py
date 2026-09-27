@@ -306,8 +306,8 @@ def ocean_provider(now):
         status = "NOT_INSTALLED"
         message = (
             "Copernicus Marine subsetting needs the official copernicusmarine toolbox and an account. "
-            + ("Product catalogue is reachable; " if meta else "")
-            + "no currents have been retrieved."
+            + ("The product catalogue is reachable, but " if meta else "")
+            + ("no currents have been retrieved." if meta else "No currents have been retrieved.")
         )
     elif not marine.credentials_configured():
         status, message = "AUTH_REQUIRED", "Set COPERNICUSMARINE_SERVICE_USERNAME / _PASSWORD to retrieve currents."

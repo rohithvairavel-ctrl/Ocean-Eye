@@ -41,11 +41,25 @@ def _score(partial, evidence_value):
     return round(value, 1), breakdown
 
 
+def _impact(result):
+    """Runs created by older builds stored receptor overlaps without their
+    representative coordinates / overlap times. Recompute only that intersection
+    metadata from the run's own forecast and receptors (the physical forecast is
+    unchanged), exactly as backend.intelligence does for older runs."""
+    impact = result["impact"]
+    receptors = impact.get("receptors", [])
+    if any("coordinates" not in r or "first_overlap_time" not in r for r in receptors) and result.get("receptors"):
+        from .drift import impact as recompute
+
+        return recompute(result["forecast"], result["receptors"])
+    return impact
+
+
 def candidates(result):
     spill = result["spill"]
     origin = result["origin"]
     vessels = result.get("vessels", [])
-    impact = result["impact"]
+    impact = _impact(result)
     out = []
 
     radius = origin["radius90_km"]

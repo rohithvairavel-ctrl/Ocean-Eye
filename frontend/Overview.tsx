@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowRight, ChevronRight, FlaskConical, Play, Plus } from 'lucide-react';
-import { Json, api, coordinate, shortTime, time, sentence } from './api';
+import { Json, api, coordinate, overlapTime, shortTime, time, sentence } from './api';
 import MaritimeMap from './MaritimeMap';
 import { LiveStrip, provider } from './LiveData';
 import { Countdown, Metric, PageHeader, StateBlock, Status, Tag } from './ui';
@@ -180,7 +180,7 @@ export default function Overview({
       'Next potential exposure',
       exposure ? exposure.name : 'No sampled overlap',
       exposure
-        ? <>+{exposure.first_overlap_h} h after observation · {shortTime(exposure.first_overlap_time)} · potential, not confirmed</>
+        ? <>+{exposure.first_overlap_h} h after observation · {shortTime(overlapTime(a, exposure)!)} · potential, not confirmed</>
         : a.receptors.features.length ? 'Forecast envelope does not reach loaded receptors by +48 h.' : 'No receptor layer loaded for this AOI.',
       'Ecological Exposure',
     ],

@@ -649,3 +649,20 @@ def test_auto_analyze_uses_marine_currents_when_access_is_real(isolated, monkeyp
     assert copernicus.auto_analyze_dependencies({**cfg, "environment": path}, acquired) == [
         "AIS observations overlapping the release window"
     ]  # the demo AIS is 2025 -- still honestly missing
+
+
+def test_next_observation_and_truthloop_accept_runs_from_older_builds(isolated):
+    """Regression: runs stored by earlier builds lack receptor coordinates /
+    first_overlap_time. Next-Best-Observation and TruthLoop must still work."""
+    from backend import next_observation, truthloop
+
+    with TestClient(app) as c:
+        case = _run_demo(c)
+        result = c.get(f"/api/v1/cases/{case['id']}/analysis").json()
+    for r in result["impact"]["receptors"]:
+        r.pop("coordinates", None)
+        r.pop("first_overlap_time", None)
+    cands = next_observation.candidates(result)
+    receptor = next(c for c in cands if c["target_type"] == "NEAREST POTENTIAL EXPOSURE RECEPTOR")
+    assert len(receptor["center"]) == 2
+    assert truthloop.unchallenged(result)["discriminating_evidence"]

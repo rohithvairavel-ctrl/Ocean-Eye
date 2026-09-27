@@ -106,3 +106,10 @@ export const sentence = (value: string) =>
     .toLowerCase()
     .replace(/^\w/, (c) => c.toUpperCase())
     .replace(/\b(ais|sar|aoi|mmsi|utc)\b/gi, (m) => m.toUpperCase());
+
+/** First potential-exposure time; runs from older builds stored only the hour offset. */
+export const overlapTime = (a: Json, r: Json): string | null =>
+  r.first_overlap_time ||
+  (r.first_overlap_h !== null && r.first_overlap_h !== undefined
+    ? new Date(Date.parse(a.observation_time) + r.first_overlap_h * 3600000).toISOString()
+    : null);
