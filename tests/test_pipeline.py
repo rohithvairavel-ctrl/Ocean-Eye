@@ -190,6 +190,44 @@ def test_reject_bad_inputs_and_cross_origin(client, tmp_path):
     assert client.get("/api/v1/cases/not-a-case/spill").status_code == 404
 
 
+def test_failed_case_import_removes_partial_uploads(client):
+    config = json.loads((DATA / "demo/case.json").read_text())
+    before = {p.name for p in (DATA / "cases").iterdir()}
+    response = client.post(
+        "/api/v1/cases/import",
+        data={
+            "metadata": json.dumps(
+                {
+                    "name": "Rejected upload",
+                    "source_type": "REAL",
+                    "observation_time": config["observation_time"],
+                    "release_window": config["release_window"],
+                    "radiometry": "sigma0_db",
+                }
+            )
+        },
+        files={
+            "satellite": ("broken.tif", b"not a geotiff", "image/tiff"),
+            "ais_file": ("ais.csv", (DATA / "ais/demo.csv").read_bytes(), "text/csv"),
+            "environment": (
+                "environment.json",
+                (DATA / "environment/demo.json").read_bytes(),
+                "application/json",
+            ),
+        },
+    )
+    assert response.status_code == 422
+    assert {p.name for p in (DATA / "cases").iterdir()} == before
+
+
+def test_internal_key_names_are_not_exposed():
+    import asyncio
+    from backend.app import not_found
+
+    response = asyncio.run(not_found(None, KeyError("coordinates")))
+    assert json.loads(response.body) == {"detail": "Requested resource was not found"}
+
+
 def test_geography_import_search(client):
     value = {
         "type": "FeatureCollection",

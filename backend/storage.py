@@ -22,6 +22,7 @@ def canonical(value):
 def connect():
     db = sqlite3.connect(DATA / "ocean_eye.sqlite", timeout=30)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
     return db
 
 
@@ -52,6 +53,10 @@ def init():
             UNIQUE(watch_id, stac_id)
         );
         CREATE INDEX IF NOT EXISTS observations_watch ON observations(watch_id);
+        CREATE INDEX IF NOT EXISTS runs_case ON runs(case_id);
+        CREATE INDEX IF NOT EXISTS audit_case_seq ON audit(case_id, seq);
+        CREATE INDEX IF NOT EXISTS scenarios_case_run ON scenarios(case_id, run_id);
+        CREATE INDEX IF NOT EXISTS watch_areas_case ON watch_areas(case_id);
         CREATE TABLE IF NOT EXISTS truthloop_runs(
             run_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, created TEXT NOT NULL,
             payload TEXT NOT NULL, hash TEXT NOT NULL

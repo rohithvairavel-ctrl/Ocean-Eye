@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from .config import DATA, ROOT, VERSION
+from .config import ALLOWED_ORIGINS, DATA, DEPLOYMENT_MODE, ROOT, VERSION
 from . import storage, datasets, engine, ais, copernicus
 from .drift import timestamp
 
@@ -54,14 +54,7 @@ app.include_router(live_data_router)
 async def local_guard(request: Request, call_next):
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         origin = request.headers.get("origin")
-        if origin and origin not in (
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
-            "http://localhost:4173",
-            "http://127.0.0.1:4173",
-        ):
+        if origin and origin.rstrip("/") not in ALLOWED_ORIGINS:
             return JSONResponse(
                 {"detail": "Cross-origin writes are disabled"}, status_code=403
             )
@@ -70,7 +63,19 @@ async def local_guard(request: Request, call_next):
 
 @app.exception_handler(KeyError)
 async def not_found(request, exc):
-    return JSONResponse({"detail": str(exc)}, status_code=404)
+    safe = {
+        "Case not found",
+        "Run not found",
+        "Watch area not found",
+        "Vessel is not in this investigation",
+        "Scenario not found",
+        "Unknown next-best-observation candidate for this run",
+    }
+    message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else ""
+    return JSONResponse(
+        {"detail": message if message in safe else "Requested resource was not found"},
+        status_code=404,
+    )
 
 
 @app.exception_handler(ValueError)
@@ -83,7 +88,7 @@ def health():
     return {
         "status": "online",
         "version": VERSION,
-        "mode": "local",
+        "mode": DEPLOYMENT_MODE,
         "trained_oil_model": False,
         "database": "SQLite",
         "geospatial_engine": "Rasterio / PyProj / Shapely",
@@ -180,57 +185,65 @@ async def import_case(
         raise ValueError("Release window must be ordered and before observation")
     if Path(satellite.filename or "").suffix.lower() not in (".tif", ".tiff"):
         raise ValueError("Satellite input must be a calibrated georeferenced GeoTIFF")
+    if Path(ais_file.filename or "").suffix.lower() != ".csv":
+        raise ValueError("AIS input must be a CSV file")
+    if Path(environment.filename or "").suffix.lower() != ".json":
+        raise ValueError("Environment input must be a JSON file")
     folder = DATA / "cases" / str(uuid.uuid4())
     folder.mkdir()
-    await receive(satellite, folder / "satellite.tif")
-    await receive(ais_file, folder / "ais.csv")
-    await receive(environment, folder / "environment.json")
-    from .drift import validate_environment
-
-    env = json.loads((folder / "environment.json").read_text(encoding="utf-8-sig"))
-    validate_environment(env, config["observation_time"], config["release_window"])
-    ais.load_ais(folder / "ais.csv")
-    if env.get("source_type") not in ("REAL", "SYNTHETIC"):
-        raise ValueError("Environment must declare source_type")
-    import rasterio
-
     try:
-        raster = rasterio.open(folder / "satellite.tif")
-    except rasterio.errors.RasterioIOError as exc:
-        raise ValueError("Satellite file is not a readable GeoTIFF") from exc
-    with raster as src:
-        if not src.crs:
-            raise ValueError("Satellite must contain a valid CRS")
-        declared = src.tags().get("radiometry")
-        if declared and declared != parsed.radiometry:
-            raise ValueError("Declared radiometry conflicts with GeoTIFF metadata")
-        if src.width * src.height > 25000000:
-            raise ValueError(
-                "Scene exceeds 25 million pixels; tile the scene before import"
+        await receive(satellite, folder / "satellite.tif")
+        await receive(ais_file, folder / "ais.csv")
+        await receive(environment, folder / "environment.json")
+        from .drift import validate_environment
+
+        env = json.loads((folder / "environment.json").read_text(encoding="utf-8-sig"))
+        validate_environment(env, config["observation_time"], config["release_window"])
+        ais.load_ais(folder / "ais.csv")
+        if env.get("source_type") not in ("REAL", "SYNTHETIC"):
+            raise ValueError("Environment must declare source_type")
+        import rasterio
+
+        try:
+            raster = rasterio.open(folder / "satellite.tif")
+        except rasterio.errors.RasterioIOError as exc:
+            raise ValueError("Satellite file is not a readable GeoTIFF") from exc
+        with raster as src:
+            if not src.crs:
+                raise ValueError("Satellite must contain a valid CRS")
+            declared = src.tags().get("radiometry")
+            if declared and declared != parsed.radiometry:
+                raise ValueError("Declared radiometry conflicts with GeoTIFF metadata")
+            if src.width * src.height > 25000000:
+                raise ValueError(
+                    "Scene exceeds 25 million pixels; tile the scene before import"
+                )
+            satellite_source = (
+                "SYNTHETIC"
+                if src.tags().get("source_type") == "SYNTHETIC"
+                else parsed.source_type
             )
-        satellite_source = (
-            "SYNTHETIC"
-            if src.tags().get("source_type") == "SYNTHETIC"
-            else parsed.source_type
-        )
-    config["sources"] = {
-        "satellite": satellite_source,
-        "ais": parsed.source_type,
-        "environment": env["source_type"],
-    }
-    if "SYNTHETIC" in config["sources"].values():
-        config["source_type"] = "SYNTHETIC"
-    config.update(
-        {
-            key: str((folder / file).relative_to(DATA))
-            for key, file in [
-                ("satellite", "satellite.tif"),
-                ("ais", "ais.csv"),
-                ("environment", "environment.json"),
-            ]
+        config["sources"] = {
+            "satellite": satellite_source,
+            "ais": parsed.source_type,
+            "environment": env["source_type"],
         }
-    )
-    return insert_case(config)
+        if "SYNTHETIC" in config["sources"].values():
+            config["source_type"] = "SYNTHETIC"
+        config.update(
+            {
+                key: str((folder / file).relative_to(DATA))
+                for key, file in [
+                    ("satellite", "satellite.tif"),
+                    ("ais", "ais.csv"),
+                    ("environment", "environment.json"),
+                ]
+            }
+        )
+        return insert_case(config)
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
 
 
 @app.get("/api/v1/cases/{case_id}")

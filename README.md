@@ -75,7 +75,13 @@ backend only; the browser polls the local `/api/v1/live-data/status` control pla
 | Copernicus Marine currents | `copernicusmarine` toolbox + `COPERNICUSMARINE_SERVICE_*` | `NOT_INSTALLED` / `AUTH_REQUIRED` |
 
 Add an area to watch from Next Observation, TruthLoop or Copernicus Watch. Planned passes
-are labelled PLANNED — NOT GUARANTEED. See `.env.example` for configuration.
+are labelled PLANNED — NOT GUARANTEED. See `.env.example` for configuration. Provider
+credentials stay in the backend environment and must never use a `VITE_` prefix.
+
+The scheduler runs inside the API process. A sleeping, paused, or scale-to-zero host does
+not poll providers while it is stopped, and multiple API workers would each start a
+scheduler. For continuous monitoring, keep one API process awake or move polling to one
+durable worker before scaling the web service.
 
 ## Scientific scope
 
@@ -90,7 +96,10 @@ See [DATASETS.md](docs/DATASETS.md) for import formats and source URLs.
 - AIS: MarineCadastre historical CSV schema, with newer lowercase/latitude/longitude aliases.
 - SAR: Zenodo Sentinel-1 Part I/II/III compatibility for **extracted, calibrated, georeferenced images**. The 40+ GB archive is not bundled or downloaded automatically.
 - Basemap: Natural Earth public-domain country, marine-region, port and coastline features, downloaded and stored locally with source checksums.
-- No real incident imagery or matching real vessel AIS has been acquired. The provided full investigation uses synthetic inputs.
+- Live Sentinel-1 discovery, calibrated imagery retrieval, acquisition-plan lookup, and
+  Copernicus Marine current retrieval are implemented. A complete real incident still
+  requires time-matched calibrated imagery, AIS, and environmental inputs. The bundled
+  full investigation remains synthetic and is always labelled as such.
 
 ## Development
 
@@ -128,7 +137,7 @@ docs/                     Presentation, data, architecture and capability guides
 
 ## Docker
 
-`docker compose up --build` serves the built app at **http://127.0.0.1:8000**. It uses a persistent named data volume. Docker configuration is supplied; the local Windows workflow is the tested deployment. The optional PostGIS schema is in `docker/postgis.sql`; the active local database is SQLite, not PostGIS.
+`docker compose up --build` serves the built app at **http://127.0.0.1:8000**. It uses a persistent named data volume. Docker configuration is supplied; the local Windows workflow is the tested deployment. The optional PostGIS schema is in `docker/postgis.sql`; the active local database is SQLite, not PostGIS. For a public deployment, set `OCEANEYE_DEPLOYMENT_MODE`, `OCEANEYE_ALLOWED_ORIGINS`, `OCEAN_DATA`, and provider credentials in the backend environment. Serve the UI and API from one origin when possible.
 
 ## Local security and custody
 

@@ -2985,6 +2985,108 @@ input[type='file']::file-selector-button {
   }
 }
 
+@media (max-width: 800px) {
+  .shell,
+  .shell.collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    position: sticky;
+    z-index: 30;
+    width: 100%;
+    height: 54px;
+    padding: 6px var(--s2);
+    flex-direction: row;
+    align-items: center;
+    overflow: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    padding: 0 var(--s2);
+  }
+  .brand-text,
+  .nav-label,
+  .collapse {
+    display: none;
+  }
+  .sidebar nav {
+    min-width: 0;
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  .nav-group {
+    display: contents;
+  }
+  .nav-group button,
+  .shell.collapsed .nav-group button {
+    flex: 0 0 auto;
+    width: 38px;
+    justify-content: center;
+    padding: 0;
+  }
+  .nav-group button span {
+    display: none;
+  }
+  .nav-group button.active::before {
+    left: 8px;
+    right: 8px;
+    top: auto;
+    bottom: -6px;
+    width: auto;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+  }
+  .topbar {
+    top: 54px;
+    height: auto;
+    min-height: 54px;
+    padding: var(--s2) var(--s3);
+    flex-wrap: wrap;
+    gap: var(--s2);
+  }
+  .case-switch,
+  .case-switch select,
+  .search {
+    width: 100%;
+    max-width: none;
+  }
+  .topbar-status {
+    margin-left: 0;
+  }
+  main {
+    padding: var(--s4) var(--s3) var(--s7);
+  }
+  .live-strip,
+  .form-grid-2,
+  .form-grid-4,
+  .truth-evidence .evidence-lists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .span-2,
+  .span-4 {
+    grid-column: 1;
+  }
+  .journey {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .audit li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .audit code {
+    text-align: left;
+  }
+  .modal-backdrop {
+    padding: var(--s2);
+  }
+  .modal {
+    max-height: calc(100vh - 16px);
+    padding: var(--s4);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
