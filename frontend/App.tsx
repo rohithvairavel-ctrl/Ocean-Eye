@@ -10,6 +10,7 @@ import {
   Database,
   Eye,
   FileText,
+  FlaskConical,
   FolderOpen,
   Globe2,
   Layers,
@@ -33,28 +34,62 @@ import {
 } from 'lucide-react';
 import { api, post, Json, time, coordinate } from './api';
 import MaritimeMap from './MaritimeMap';
-import { Workflow, Dossier, GlobalIncidents, Intelligence } from './Intelligence';
+import { Workflow, Dossier, GlobalIncidents, Intelligence, InvestigativePriorities } from './Intelligence';
 import CopernicusMonitor from './Copernicus';
+import TruthLoop from './TruthLoop';
 
-const nav = [
-  ['Overview', Eye],
-  ['Global Map', Globe2],
-  ['Satellite Analysis', Satellite],
-  ['Drift & Origin', Waves],
-  ['AIS Correlation', Ship],
-  ['Vessel Ranking', Activity],
-  ['SAR-AIS Screening', Radar],
-  ['Verification', ShieldCheck],
-  ['Ecological Exposure', Waves],
-  ['Response Twin', Anchor],
-  ['Attention & Alerts', TriangleAlert],
-  ['Copernicus Watch', SatelliteDish],
-  ['Evidence Graph', Network],
-  ['Timeline', Clock3],
-  ['Cases & Data', FolderOpen],
-  ['Reports', FileText],
-  ['Settings', Settings2],
-] as const;
+type NavGroup = [string, [string, typeof Eye][]];
+const navGroups: NavGroup[] = [
+  [
+    'COMMAND',
+    [
+      ['Overview', Eye],
+      ['Global Map', Globe2],
+      ['Attention & Alerts', TriangleAlert],
+    ],
+  ],
+  [
+    'OBSERVE',
+    [
+      ['Copernicus Watch', SatelliteDish],
+      ['Satellite Analysis', Satellite],
+      ['Verification', ShieldCheck],
+    ],
+  ],
+  [
+    'INVESTIGATE',
+    [
+      ['Drift & Origin', Waves],
+      ['AIS Correlation', Ship],
+      ['Vessel Ranking', Activity],
+      ['SAR-AIS Screening', Radar],
+      ['TruthLoop', FlaskConical],
+      ['Evidence Graph', Network],
+      ['Timeline', Clock3],
+    ],
+  ],
+  [
+    'PROTECT',
+    [
+      ['Ecological Exposure', Waves],
+      ['Response Twin', Anchor],
+    ],
+  ],
+  [
+    'EVIDENCE',
+    [
+      ['Cases & Data', FolderOpen],
+      ['Reports', FileText],
+    ],
+  ],
+  [
+    'SYSTEM',
+    [
+      ['Settings', Settings2],
+    ],
+  ],
+];
+const nav = navGroups.flatMap(([, items]) => items);
 function Panel({
   title,
   icon: Icon = Activity,
@@ -432,18 +467,22 @@ export default function App() {
         <div className="analyst-avatar">AN</div>
       </header>
       <aside>
-        <div className="nav-label">WORKSPACE</div>
         <nav>
-          {nav.map(([name, Icon]) => (
-            <button
-              key={name}
-              className={page === name ? 'active' : ''}
-              onClick={() => switchPage(name)}
-            >
-              <Icon size={17} />
-              <span>{name}</span>
-              {page === name && <ChevronRight size={14} />}
-            </button>
+          {navGroups.map(([group, items]) => (
+            <div className="nav-group" key={group}>
+              <div className="nav-label">{group}</div>
+              {items.map(([name, Icon]) => (
+                <button
+                  key={name}
+                  className={page === name ? 'active' : ''}
+                  onClick={() => switchPage(name)}
+                >
+                  <Icon size={17} />
+                  <span>{name}</span>
+                  {page === name && <ChevronRight size={14} />}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-bottom">
@@ -534,7 +573,7 @@ export default function App() {
             }
           />
         )}
-        {a && <Workflow navigate={setPage} />}
+        {a && <Workflow navigate={setPage} a={a} page={page} />}
         {a && page === 'Overview' && (
           <div className="classification-banner">
             <strong>OIL CANDIDATE — CLASSIFICATION PENDING</strong>
@@ -644,6 +683,13 @@ export default function App() {
                 </Panel>
               </div>
               <div className="right-column">
+                {page === 'Overview' && (
+                  <InvestigativePriorities
+                    a={a}
+                    navigate={setPage}
+                    copernicusConfigured={health?.copernicus_configured}
+                  />
+                )}
                 <Panel
                   title="Oil candidate analysis"
                   icon={Radar}
@@ -1007,6 +1053,17 @@ export default function App() {
               ))}
             </div>
           </Panel>
+        )}
+        {a && page === 'TruthLoop' && (
+          <TruthLoop
+            key={a.run_id}
+            caseId={a.case_id}
+            runId={a.run_id}
+            onVessel={(id) => {
+              setSelected(id);
+              setModal('vessel');
+            }}
+          />
         )}
         {page === 'Copernicus Watch' && <CopernicusMonitor />}
         {page === 'Cases & Data' && (

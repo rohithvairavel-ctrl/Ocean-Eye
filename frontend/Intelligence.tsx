@@ -1,31 +1,133 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, ReactNode } from 'react';
+import { ChevronRight, ShieldAlert } from 'lucide-react';
 import { api, post, Json, time, coordinate } from './api';
 import MaritimeMap from './MaritimeMap';
 import { NextBestObservation } from './Copernicus';
 
-export function Workflow({ navigate }: { navigate: (s: string) => void }) {
-  const stages = [
-    ['DETECT', 'Satellite Analysis'],
-    ['VERIFY', 'Verification'],
-    ['RECONSTRUCT', 'Drift & Origin'],
-    ['ATTRIBUTE', 'Vessel Ranking'],
-    ['PREDICT', 'Drift & Origin'],
-    ['PROTECT', 'Ecological Exposure'],
-    ['RESPOND', 'Response Twin'],
-    ['PROVE', 'Evidence Graph'],
-  ];
+export function Workflow({
+  navigate,
+  a,
+  page,
+}: {
+  navigate: (s: string) => void;
+  a?: Json;
+  page?: string;
+}) {
+  // Real, deterministic stage state -- never fabricated. COMPLETE means the
+  // underlying result already exists in this run; WAITING means the stage is
+  // available but requires an explicit analyst action (challenge, scenario,
+  // watch) that has not necessarily been taken; UNAVAILABLE means this run's
+  // own data structurally cannot support the stage (e.g. no AIS tracks).
+  const vesselCount = a?.vessels?.length ?? 0;
+  const stages: [string, string, string][] = [
+    ['OBSERVE', 'Satellite Analysis', a ? 'COMPLETE' : 'WAITING'],
+    ['VERIFY', 'Verification', a ? 'COMPLETE' : 'WAITING'],
+    ['RECONSTRUCT', 'Drift & Origin', a?.origin ? 'COMPLETE' : 'WAITING'],
+    ['INVESTIGATE', 'Vessel Ranking', !a ? 'WAITING' : vesselCount > 0 ? 'COMPLETE' : 'UNAVAILABLE'],
+    ['CHALLENGE', 'TruthLoop', !a ? 'WAITING' : vesselCount > 0 ? 'WAITING' : 'UNAVAILABLE'],
+    ['FORECAST', 'Drift & Origin', a?.forecast ? 'COMPLETE' : 'WAITING'],
+    ['PROTECT', 'Ecological Exposure', a?.impact ? 'COMPLETE' : 'WAITING'],
+    ['RESPOND', 'Response Twin', 'WAITING'],
+    ['RE-OBSERVE', 'Copernicus Watch', 'WAITING'],
+    ['PROVE', 'Evidence Graph', a?.evidence ? 'COMPLETE' : 'WAITING'],
+  ].map(([label, target, state]) => [label, target, page === target ? 'ACTIVE' : state]);
   return (
-    <nav className="mission-workflow" aria-label="Investigation workflow">
-      {stages.map(([label, page], i) => (
-        <button key={label} onClick={() => navigate(page)}>
+    <nav className="mission-workflow" aria-label="Investigation journey">
+      {stages.map(([label, target, state], i) => (
+        <button key={label} className={'stage-' + state.toLowerCase()} onClick={() => navigate(target)} title={state}>
           <small>{String(i + 1).padStart(2, '0')}</small>
           {label}
-          <span>→</span>
+          <span className={'stage-dot ' + state.toLowerCase()} />
         </button>
       ))}
     </nav>
   );
 }
+export function InvestigativePriorities({
+  a,
+  navigate,
+  copernicusConfigured,
+}: {
+  a: Json;
+  navigate: (s: string) => void;
+  copernicusConfigured?: boolean;
+}) {
+  const [truthloop, setTruthloop] = useState<Json | null>(null);
+  const [nextObs, setNextObs] = useState<Json | null>(null);
+  useEffect(() => {
+    setTruthloop(null);
+    setNextObs(null);
+    api(`/cases/${a.case_id}/truthloop?run_id=${a.run_id}`).then(setTruthloop).catch(() => setTruthloop(null));
+    api(`/cases/${a.case_id}/next-observations?run_id=${a.run_id}`).then(setNextObs).catch(() => setNextObs(null));
+  }, [a.case_id, a.run_id]);
+
+  const lead = a.vessels?.[0];
+  const exposure = (a.impact?.receptors || []).find((r: Json) => r.first_overlap_h !== null);
+  const stabilityBadge: Record<string, string> = {
+    ROBUST: 'green', MODERATE: 'amber', FRAGILE: 'red', INDETERMINATE: 'purple',
+  };
+  const topCandidate = nextObs?.candidates?.[0];
+
+  const rows: [string, ReactNode, () => void][] = [
+    [
+      'TOP INVESTIGATIVE LEAD',
+      lead ? <>{lead.name} <span className="muted">· {lead.score}/100</span></> : <span className="muted">No AIS-tracked vessels</span>,
+      () => navigate('Vessel Ranking'),
+    ],
+    [
+      'CONCLUSION STABILITY',
+      truthloop ? (
+        <span className={'badge ' + (stabilityBadge[truthloop.stability.state] || '')}>{truthloop.stability.state}</span>
+      ) : (
+        <span className="muted">Computing…</span>
+      ),
+      () => navigate('TruthLoop'),
+    ],
+    [
+      'NEXT POTENTIAL EXPOSURE',
+      exposure ? <>{exposure.name} <span className="muted">· +{exposure.first_overlap_h}h</span></> : <span className="muted">No sampled overlap within forecast</span>,
+      () => navigate('Ecological Exposure'),
+    ],
+    [
+      'NEXT-BEST OBSERVATION',
+      topCandidate ? <>{topCandidate.target_type} <span className="muted">· {topCandidate.score}/100</span></> : <span className="muted">Computing…</span>,
+      () => navigate('TruthLoop'),
+    ],
+    [
+      'COPERNICUS STATUS',
+      <span className={'badge ' + (copernicusConfigured ? 'green' : 'amber')}>{copernicusConfigured ? 'LIVE' : 'DEMO'}</span>,
+      () => navigate('Copernicus Watch'),
+    ],
+    [
+      'RESPONSE WINDOW',
+      exposure ? <>~{exposure.first_overlap_h}h to modeled onset</> : <span className="muted">No modeled onset within forecast</span>,
+      () => navigate('Response Twin'),
+    ],
+  ];
+
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <h2>
+          <ShieldAlert size={16} />
+          Investigative priorities
+        </h2>
+      </div>
+      <ul className="priority-list">
+        {rows.map(([label, value, go]) => (
+          <li key={label}>
+            <button onClick={go}>
+              <span className="micro">{label}</span>
+              <span>{value}</span>
+              <ChevronRight size={13} />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function Detail({ value, label = 'Evidence and provenance' }: { value: any; label?: string }) {
   return (
     <details>

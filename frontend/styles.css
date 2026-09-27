@@ -20,6 +20,21 @@
   --amber: #FFB547;
   --red: #FF5B69;
   --text: #EAF4F7;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 * {
   box-sizing: border-box;
@@ -273,7 +288,15 @@ aside {
 nav {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+}
+.nav-group + .nav-group {
+  margin-top: 12px;
+}
+.nav-group nav,
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 nav button {
   display: flex;
@@ -412,6 +435,11 @@ main {
   color: #FF5B69;
   background: #FF5B693D;
   border-color: #FF5B6977;
+}
+.badge.purple {
+  color: #9B8AFB;
+  background: #9B8AFB33;
+  border-color: #9B8AFB66;
 }
 .case-strip {
   display: flex;
@@ -1899,30 +1927,60 @@ footer > div > span {
   flex-wrap: wrap;
   gap: 4px;
   margin: 14px 0 20px;
-  border: 1px solid var(--border, #244456);
+  border: 1px solid var(--line);
   padding: 10px;
   border-radius: 6px;
-  background: #091c29;
+  background: #0C1D2A;
 }
 .mission-workflow button {
   flex: 1;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   justify-content: center;
   padding: 9px 7px;
   font-size: 10px;
   letter-spacing: 1px;
-  color: #9ce3f6;
+  color: #8FAAB6;
   background: transparent;
   border: 0;
+  border-radius: 4px;
   cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.mission-workflow button:hover {
+  background: #102635;
+  color: #EAF4F7;
+}
+.mission-workflow button.stage-active {
+  background: #173A4A;
+  color: #35D3D1;
 }
 .mission-workflow small {
-  color: #57899c;
+  color: #8FAAB6;
 }
-.mission-workflow span {
-  color: #477181;
+.stage-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  background: #173A4A;
+}
+.stage-dot.complete {
+  background: #5DD39E;
+}
+.stage-dot.active {
+  background: #35D3D1;
+  box-shadow: 0 0 6px #35D3D1;
+}
+.stage-dot.waiting {
+  background: #FFB547;
+}
+.stage-dot.unavailable {
+  background: #173A4A;
+}
+.stage-dot.error {
+  background: #FF5B69;
 }
 .classification-banner {
   display: flex;
@@ -2256,4 +2314,171 @@ td small {
 }
 .checkbox-row input {
   margin-top: 3px;
+}
+
+
+/* TruthLoop -- adversarial evidence & falsification engine */
+.truthloop-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.truthloop-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+.truthloop-layout {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1200px) {
+  .truthloop-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.truthloop-hypothesis {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: #102635;
+}
+.truthloop-hypothesis.unevaluated {
+  opacity: 0.7;
+}
+.truthloop-hypothesis header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.truthloop-hypothesis ul {
+  margin: 2px 0 6px 16px;
+  padding: 0;
+  font-size: 11px;
+  color: #8FAAB6;
+}
+.truthloop-tag {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-top: 6px;
+}
+.truthloop-tag.support {
+  color: #5DD39E;
+  background: #5DD39E22;
+}
+.truthloop-tag.contradict {
+  color: #FF5B69;
+  background: #FF5B6922;
+}
+.truthloop-tag.missing {
+  color: #8FAAB6;
+  background: #173A4A;
+}
+.truthloop-position {
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 8px;
+  color: #EAF4F7;
+}
+.truthloop-reasons {
+  margin: 6px 0 16px 16px;
+  padding: 0;
+  font-size: 12px;
+}
+.truthloop-challenges {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.truthloop-challenge {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #102635;
+}
+.truthloop-challenge.reversed {
+  border-left-color: #FF5B69;
+}
+.truthloop-challenge header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.truthloop-compare {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.truthloop-ranking {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  font-size: 11px;
+}
+.truthloop-ranking li {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0;
+  color: #8FAAB6;
+}
+.truthloop-ranking li.lead {
+  color: #35D3D1;
+  font-weight: 600;
+}
+.truthloop-explain {
+  font-size: 11px;
+  color: #EAF4F7;
+  margin-top: 4px;
+}
+.truthloop-next {
+  margin-top: 16px;
+}
+
+
+.priority-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.priority-list li + li {
+  border-top: 1px solid var(--line);
+}
+.priority-list button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 14px;
+  text-align: left;
+  transition: background 150ms ease;
+}
+.priority-list button:hover {
+  background: #102635;
+}
+.priority-list button > span:nth-child(2) {
+  font-size: 12px;
+  color: #EAF4F7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.priority-list button svg {
+  margin-left: auto;
+  color: #8FAAB6;
 }

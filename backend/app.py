@@ -36,10 +36,12 @@ app = FastAPI(title="OCEAN-EYE", version="1.0.0", lifespan=lifespan)
 from .response_api import router as response_router
 from .copernicus_api import router as copernicus_router
 from .next_observation_api import router as next_observation_router
+from .truthloop_api import router as truthloop_router
 
 app.include_router(response_router)
 app.include_router(copernicus_router)
 app.include_router(next_observation_router)
+app.include_router(truthloop_router)
 
 
 @app.middleware("http")

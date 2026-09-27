@@ -8,6 +8,15 @@ from datetime import datetime, timezone
 from .drift import timestamp
 from .geo import distance, circle
 
+DEFAULT_WEIGHTS = {
+    "Origin proximity": 0.35,
+    "Time coverage": 0.1,
+    "Trajectory overlap": 0.25,
+    "Speed reduction": 0.12,
+    "Course change": 0.08,
+    "AIS gap": 0.1,
+}
+
 
 def load_ais(path):
     groups = defaultdict(list)
@@ -115,7 +124,7 @@ def load_ais(path):
     }
 
 
-def analyze(tracks, origin, observation):
+def analyze(tracks, origin, observation, weights=None):
     center = origin["centroid"]
     start, end = map(timestamp, origin["release_window"])
     obs = timestamp(observation)
@@ -208,15 +217,8 @@ def analyze(tracks, origin, observation):
             "Course change": min(course_delta / 30, 1),
             "AIS gap": gap_score,
         }
-        weights = {
-            "Origin proximity": 0.35,
-            "Time coverage": 0.1,
-            "Trajectory overlap": 0.25,
-            "Speed reduction": 0.12,
-            "Course change": 0.08,
-            "AIS gap": 0.1,
-        }
-        score = 100 * sum(components[k] * weights[k] for k in weights)
+        active_weights = weights or DEFAULT_WEIGHTS
+        score = 100 * sum(components[k] * active_weights[k] for k in components)
         support = []
         contradictions = []
         if not relevant:
@@ -258,10 +260,10 @@ def analyze(tracks, origin, observation):
                     {
                         "name": k,
                         "value": round(components[k] * 100, 2),
-                        "weight": weights[k],
-                        "contribution": round(components[k] * weights[k] * 100, 2),
+                        "weight": active_weights[k],
+                        "contribution": round(components[k] * active_weights[k] * 100, 2),
                     }
-                    for k in weights
+                    for k in components
                 ],
                 "supporting": support,
                 "contradicting": contradictions,

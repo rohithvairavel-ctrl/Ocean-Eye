@@ -322,6 +322,73 @@ def derive(result):
             }
         )
         pairs.extend([("ais", v["mmsi"]), (v["mmsi"], "ranking")])
+
+    # TruthLoop chain: lightweight, real-data nodes only -- no re-simulation here.
+    # Heavy adversarial recomputation lives in backend.truthloop and is fetched
+    # on demand via GET /api/v1/cases/{case_id}/truthloop, not embedded in every run.
+    top_margin = (result.get("attribution") or {}).get("robustness", {}).get("top_margin")
+    nearest_receptor = next(
+        (r for r in result.get("impact", {}).get("receptors", []) if r.get("first_overlap_h") is not None),
+        None,
+    )
+    nodes.append(
+        {
+            "id": "truthloop",
+            "label": "TruthLoop challenge",
+            "kind": "SCREENING RESULT",
+            "details": {
+                "epistemic_state": "Adversarial recomputation available on demand; not embedded in this run.",
+                "top_score_margin": top_margin,
+                "source": "GET /api/v1/cases/{case_id}/truthloop",
+                "assumptions": ["Uses this run's own AIS tracks and drift-hindcast functions only."],
+            },
+        }
+    )
+    nodes.append(
+        {
+            "id": "contradicting",
+            "label": "Contradicting evidence",
+            "kind": "DERIVED MEASUREMENT",
+            "details": {
+                "epistemic_state": "Real per-candidate contradicting evidence from this run's screening.",
+                "contradicting": vessels[0]["contradicting"] if vessels else [],
+                "source": "backend.ais.analyze",
+            },
+        }
+    )
+    nodes.append(
+        {
+            "id": "receptor",
+            "label": "Nearest potential exposure receptor",
+            "kind": "MODEL OUTPUT",
+            "details": nearest_receptor
+            or {
+                "epistemic_state": "UNAVAILABLE -- no receptor with sampled forecast overlap in this run.",
+            },
+        }
+    )
+    nodes.append(
+        {
+            "id": "next_observation",
+            "label": "Next-best observation",
+            "kind": "RESPONSE SCENARIO",
+            "details": {
+                "epistemic_state": "Ranked re-observation targets available via Next-Best-Observation; heuristic, not a probability.",
+                "source": "GET /api/v1/cases/{case_id}/next-observations",
+            },
+        }
+    )
+    pairs.extend(
+        [
+            ("ranking", "truthloop"),
+            ("truthloop", "contradicting"),
+            ("contradicting", "forecast"),
+            ("forecast", "receptor"),
+            ("receptor", "response"),
+            ("response", "next_observation"),
+            ("next_observation", "proof"),
+        ]
+    )
     return {
         "version": VERSION,
         "run_id": result["run_id"],
