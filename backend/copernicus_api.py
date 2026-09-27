@@ -24,6 +24,7 @@ class WatchAreaInput(BaseModel):
     run_id: str | None = None
     note: str = ""
     source: str = "operator"
+    auto_analyze: bool = False
 
 
 class WatchAreaUpdate(BaseModel):
@@ -31,6 +32,7 @@ class WatchAreaUpdate(BaseModel):
     interval_minutes: int | None = Field(
         default=None, ge=copernicus.MIN_INTERVAL_MINUTES, le=copernicus.MAX_INTERVAL_MINUTES
     )
+    auto_analyze: bool | None = None
 
 
 @router.get("/status")
@@ -47,13 +49,13 @@ def watch_areas():
 def create_watch_area(spec: WatchAreaInput):
     return copernicus.create_watch_area(
         spec.name, list(spec.center), spec.radius_km, spec.interval_minutes,
-        spec.case_id, spec.run_id, spec.note, spec.source,
+        spec.case_id, spec.run_id, spec.note, spec.source, spec.auto_analyze,
     )
 
 
 @router.patch("/watch-areas/{watch_id}")
 def update_watch_area(watch_id: str, spec: WatchAreaUpdate):
-    return copernicus.update_watch_area(watch_id, spec.status, spec.interval_minutes)
+    return copernicus.update_watch_area(watch_id, spec.status, spec.interval_minutes, spec.auto_analyze)
 
 
 @router.delete("/watch-areas/{watch_id}")

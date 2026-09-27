@@ -186,7 +186,7 @@ def bbox_for(center, radius_km):
 
 
 def create_watch_area(name, center, radius_km, interval_minutes=DEFAULT_INTERVAL_MINUTES,
-                       case_id=None, run_id=None, note="", source="operator"):
+                       case_id=None, run_id=None, note="", source="operator", auto_analyze=False):
     if not (-180 <= center[0] <= 180 and -90 <= center[1] <= 90):
         raise ValueError("center must be [longitude, latitude] in WGS84")
     if not (0 < radius_km <= 500):
@@ -201,15 +201,19 @@ def create_watch_area(name, center, radius_km, interval_minutes=DEFAULT_INTERVAL
         db.execute(
             """INSERT INTO watch_areas(
                 id,name,created,center_lon,center_lat,radius_km,interval_minutes,status,source,
-                case_id,run_id,note,last_checked,last_status,last_message,consecutive_failures
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                case_id,run_id,note,last_checked,last_status,last_message,consecutive_failures,
+                auto_analyze
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
             (watch_id, name, now, center[0], center[1], radius_km, interval_minutes, "ACTIVE",
-             source, case_id, run_id, note, None, "PENDING", None),
+             source, case_id, run_id, note, None, "PENDING", None, int(bool(auto_analyze))),
         )
     storage.audit(
         case_id or "global",
         "watch_area_created",
-        {"watch_id": watch_id, "name": name, "center": list(center), "radius_km": radius_km, "source": source},
+        {
+            "watch_id": watch_id, "name": name, "center": list(center), "radius_km": radius_km,
+            "source": source, "auto_analyze": bool(auto_analyze),
+        },
     )
     return get_watch_area(watch_id)
 
@@ -227,7 +231,7 @@ def list_watch_areas():
         return [dict(r) for r in db.execute("SELECT * FROM watch_areas ORDER BY created DESC")]
 
 
-def update_watch_area(watch_id, status=None, interval_minutes=None):
+def update_watch_area(watch_id, status=None, interval_minutes=None, auto_analyze=None):
     get_watch_area(watch_id)
     fields, values = [], []
     if status is not None:
@@ -242,13 +246,19 @@ def update_watch_area(watch_id, status=None, interval_minutes=None):
             )
         fields.append("interval_minutes=?")
         values.append(interval_minutes)
+    if auto_analyze is not None:
+        fields.append("auto_analyze=?")
+        values.append(int(bool(auto_analyze)))
     if fields:
         values.append(watch_id)
         with storage.connect() as db:
             db.execute(f"UPDATE watch_areas SET {','.join(fields)} WHERE id=?", values)
         storage.audit(
             "global", "watch_area_updated",
-            {"watch_id": watch_id, "status": status, "interval_minutes": interval_minutes},
+            {
+                "watch_id": watch_id, "status": status, "interval_minutes": interval_minutes,
+                "auto_analyze": auto_analyze,
+            },
         )
     return get_watch_area(watch_id)
 
@@ -316,6 +326,108 @@ def _save_calibrated_geotiff(stac_id, raw_linear_tiff_bytes, feature):
     return path.name, storage.digest(path)
 
 
+def _attempt_auto_analyze(area, stac_id, artifact_name, feature):
+    """Try to close the loop: new calibrated scene -> real case -> engine run.
+
+    This never fabricates AIS or environmental forcing. It only proceeds when the
+    watch area is linked to an originating case (case_id) that already carries
+    real AIS and environment inputs, and reuses those inputs verbatim alongside
+    the newly retrieved REAL satellite scene -- the same honesty computation the
+    manual import endpoint uses (a case is only labeled REAL if every input is).
+    When there is nothing real to reuse, this returns WAITING_FOR_DATA and
+    creates nothing.
+    """
+    case_id = area.get("case_id")
+    if not case_id:
+        return {
+            "status": "WAITING_FOR_DATA",
+            "reason": (
+                "No case is linked to this watch area, so there is no AIS or environment "
+                "input to run the pipeline against. Link a watch area to a case (e.g. via "
+                "Next-Best-Observation's \"Add to Copernicus Watch\") to enable auto-analyze."
+            ),
+        }
+    try:
+        source_case = storage.get_case(case_id)
+    except KeyError:
+        return {"status": "WAITING_FOR_DATA", "reason": f"Linked case {case_id} no longer exists."}
+    cfg = source_case["config"]
+    if not cfg.get("ais") or not cfg.get("environment"):
+        return {
+            "status": "WAITING_FOR_DATA",
+            "reason": "Linked case has no AIS or environment input on file to reuse.",
+        }
+    import uuid as uuid_module
+
+    from . import engine
+
+    acquired = feature.get("properties", {}).get("datetime") or storage.now()
+    sources = {
+        "satellite": "REAL",
+        "ais": cfg.get("sources", {}).get("ais", cfg.get("source_type", "SYNTHETIC")),
+        "environment": cfg.get("sources", {}).get("environment", cfg.get("source_type", "SYNTHETIC")),
+    }
+    new_config = {
+        "name": f"Copernicus auto-analysis · {stac_id}",
+        "observation_time": acquired,
+        "release_window": cfg.get("release_window", [acquired, acquired]),
+        "source_type": "SYNTHETIC" if "SYNTHETIC" in sources.values() else "REAL",
+        "radiometry": "sigma0_db",
+        "sensor": "Sentinel-1 SAR (Copernicus Data Space, SIGMA0_ELLIPSOID)",
+        "windage": cfg.get("windage", 0.03),
+        "seed": cfg.get("seed", 428),
+        "satellite": str((DATA / "satellite" / artifact_name).relative_to(DATA)),
+        "ais": cfg["ais"],
+        "environment": cfg["environment"],
+        "sources": sources,
+        "release_window_basis": (
+            "Reused from linked case's most recent assumption; not re-derived from this "
+            "acquisition alone."
+        ),
+        "auto_analysis": {
+            "watch_id": area["id"],
+            "source_case_id": case_id,
+            "stac_id": stac_id,
+            "triggered": storage.now(),
+        },
+    }
+    new_case_id = str(uuid_module.uuid4())
+    now = storage.now()
+    with storage.connect() as db:
+        db.execute(
+            "INSERT INTO cases(id,name,created,config) VALUES(?,?,?,?)",
+            (new_case_id, new_config["name"], now, storage.canonical(new_config)),
+        )
+    storage.audit(
+        new_case_id, "case_created", {**new_config, "trigger": "copernicus_auto_analyze"}
+    )
+    storage.audit(
+        area.get("case_id") or "global", "auto_analyze_triggered",
+        {"watch_id": area["id"], "new_case_id": new_case_id, "stac_id": stac_id},
+    )
+    run_id = str(uuid_module.uuid4())
+    with storage.connect() as db:
+        db.execute(
+            "INSERT INTO runs(id,case_id,created,state,stage) VALUES(?,?,?,?,?)",
+            (run_id, new_case_id, storage.now(), "RUNNING", "Queued"),
+        )
+    storage.audit(
+        new_case_id, "analysis_requested", {"run_id": run_id, "trigger": "copernicus_auto_analyze"}
+    )
+    engine.run(new_case_id, run_id)  # synchronous: caller already runs off the event loop
+    run = storage.get_run(run_id)
+    if run["state"] == "COMPLETE":
+        storage.audit(
+            new_case_id, "auto_analyze_alert",
+            {"run_id": run_id, "watch_id": area["id"], "title": "New Copernicus-triggered investigation ready"},
+        )
+        return {"status": "ANALYZED", "case_id": new_case_id, "run_id": run_id}
+    return {
+        "status": "ANALYSIS_FAILED", "case_id": new_case_id, "run_id": run_id,
+        "error": run.get("error"),
+    }
+
+
 def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=True):
     """Run one discovery pass for a single watch area. Never raises; returns a status dict."""
     owns_client = client is None
@@ -371,6 +483,10 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
                     raw = process_backscatter(client, token, bbox, (window[0], acquired))
                     artifact_name, sha256 = _save_calibrated_geotiff(stac_id, raw, feature)
                     status = "READY_TO_IMPORT"
+                    if area.get("auto_analyze"):
+                        outcome = _attempt_auto_analyze(area, stac_id, artifact_name, feature)
+                        provenance["auto_analyze"] = outcome
+                        status = outcome["status"]
                 except CredentialsMissing as exc:
                     status = "AUTH_REQUIRED"
                     provenance["fetch_error"] = str(exc)

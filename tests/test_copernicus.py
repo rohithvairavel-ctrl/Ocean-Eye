@@ -202,6 +202,118 @@ def test_monitor_tick_records_auth_required_without_network(isolated):
     assert results and all(r["status"] == "AUTH_REQUIRED" for r in results)
 
 
+def test_auto_analyze_without_linked_case_waits_for_data(isolated, monkeypatch):
+    monkeypatch.setenv("CDSE_CLIENT_ID", "id")
+    monkeypatch.setenv("CDSE_CLIENT_SECRET", "secret")
+    area = copernicus.create_watch_area(
+        "Standalone watch", [80.9, 12.1], 10, auto_analyze=True
+    )
+    assert area["auto_analyze"] == 1
+    tiff = _tiff_bytes()
+
+    def handler(request):
+        url = str(request.url)
+        if "openid-connect/token" in url:
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 600})
+        if "stac.dataspace" in url:
+            return httpx.Response(
+                200,
+                json={"features": [{"id": "S1A_NOCASE", "properties": {"datetime": "2026-09-20T00:00:00Z"}, "assets": {}}]},
+            )
+        if "sh.dataspace" in url:
+            return httpx.Response(200, content=tiff, headers={"content-type": "image/tiff"})
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as fake:
+        result = copernicus.check_watch_area(area, fake)
+    assert result["status"] == "OK"
+    assert result["new_observations"][0]["status"] == "WAITING_FOR_DATA"
+    observations = copernicus.list_observations(area["id"])
+    assert observations[0]["status"] == "WAITING_FOR_DATA"
+    assert "reason" in observations[0]["provenance"]["auto_analyze"]
+    # No case fabricated.
+    with storage.connect() as db:
+        count = db.execute("SELECT COUNT(*) AS n FROM cases").fetchone()["n"]
+    assert count == 0
+
+
+def test_auto_analyze_completes_loop_when_case_has_real_inputs(isolated, monkeypatch):
+    monkeypatch.setenv("CDSE_CLIENT_ID", "id")
+    monkeypatch.setenv("CDSE_CLIENT_SECRET", "secret")
+    datasets.create_demo()
+    demo_case = {
+        "name": "Bay of Bengal · SAR investigation",
+        "observation_time": "2025-08-12T14:20:00Z",
+        "source_type": "SYNTHETIC",
+        "satellite": "satellite/demo_sar.tif",
+        "ais": "ais/demo.csv",
+        "environment": "environment/demo.json",
+        "release_window": ["2025-08-11T20:00:00Z", "2025-08-11T23:00:00Z"],
+        "sources": {"satellite": "SYNTHETIC", "ais": "SYNTHETIC", "environment": "SYNTHETIC"},
+        "seed": 428,
+        "windage": 0.03,
+    }
+    import uuid as uuid_module
+
+    linked_case_id = str(uuid_module.uuid4())
+    with storage.connect() as db:
+        db.execute(
+            "INSERT INTO cases(id,name,created,config) VALUES(?,?,?,?)",
+            (linked_case_id, demo_case["name"], storage.now(), storage.canonical(demo_case)),
+        )
+
+    area = copernicus.create_watch_area(
+        "Linked watch", [80.55, 12.25], 10, case_id=linked_case_id, auto_analyze=True
+    )
+
+    # Reuse the real calibrated demo SAR scene as the "process API response" so the
+    # engine pipeline actually has a real candidate to segment, instead of a blank tile.
+    # copernicus._save_calibrated_geotiff treats its input as LINEAR POWER and applies
+    # 10*log10(...), so the demo scene's dB band is first converted back to linear here
+    # to round-trip to the same realistic dB values the demo case was built with.
+    with rasterio.open(storage.DATA / "satellite" / "demo_sar.tif") as demo_src:
+        db_band = demo_src.read(1).astype("float64")
+        linear_band = (10 ** (db_band / 10)).astype("float32")
+        demo_profile = demo_src.profile.copy()
+    demo_profile.update(dtype="float32", count=1)
+    with rasterio.io.MemoryFile() as memfile:
+        with memfile.open(**demo_profile) as dst:
+            dst.write(linear_band, 1)
+        real_tiff = memfile.read()
+
+    def handler(request):
+        url = str(request.url)
+        if "openid-connect/token" in url:
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 600})
+        if "stac.dataspace" in url:
+            return httpx.Response(
+                200,
+                json={"features": [{"id": "S1A_LINKED", "properties": {"datetime": "2025-08-12T14:20:00Z"}, "assets": {}}]},
+            )
+        if "sh.dataspace" in url:
+            return httpx.Response(200, content=real_tiff, headers={"content-type": "image/tiff"})
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as fake:
+        result = copernicus.check_watch_area(area, fake)
+
+    assert result["status"] == "OK"
+    assert result["new_observations"][0]["status"] == "ANALYZED"
+    observations = copernicus.list_observations(area["id"])
+    outcome = observations[0]["provenance"]["auto_analyze"]
+    assert outcome["status"] == "ANALYZED"
+    new_case_id = outcome["case_id"]
+    new_case = storage.get_case(new_case_id)
+    assert new_case["config"]["source_type"] == "SYNTHETIC"  # reused AIS/env were SYNTHETIC
+    assert new_case["config"]["sources"]["satellite"] == "REAL"
+    assert new_case["latest_run"] == outcome["run_id"]
+    run = storage.get_run(outcome["run_id"])
+    assert run["state"] == "COMPLETE"
+    assert run["result"]["spill"]["area_km2"] > 0
+    actions = [e["action"] for e in storage.events(new_case_id)]
+    assert "auto_analyze_alert" in actions
+
+
 def test_status_reports_configuration(isolated, monkeypatch):
     assert copernicus.status()["credentials_configured"] is False
     assert copernicus.status()["mode"] == "DEMO"

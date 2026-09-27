@@ -6,11 +6,14 @@ function statusClass(status?: string) {
   switch (status) {
     case 'OK':
     case 'READY_TO_IMPORT':
+    case 'ANALYZED':
       return 'copernicus-pill ok';
     case 'AUTH_REQUIRED':
+    case 'WAITING_FOR_DATA':
       return 'copernicus-pill auth';
     case 'OFFLINE':
     case 'FETCH_FAILED':
+    case 'ANALYSIS_FAILED':
       return 'copernicus-pill offline';
     case 'ERROR':
       return 'copernicus-pill error';
@@ -41,7 +44,8 @@ export function NextBestObservation({
 }) {
   const [data, setData] = useState<Json | null>(null),
     [error, setError] = useState(''),
-    [busy, setBusy] = useState<string | null>(null);
+    [busy, setBusy] = useState<string | null>(null),
+    [autoAnalyze, setAutoAnalyze] = useState(false);
   const load = () =>
     api(`/cases/${caseId}/next-observations?run_id=${runId}`)
       .then(setData)
@@ -60,6 +64,15 @@ export function NextBestObservation({
       <p className="micro">
         {data.method} Weights: {Object.entries(data.weights).map(([k, v]: [string, any]) => `${k.replace(/_/g, ' ')} ${Math.round(v * 100)}%`).join(' · ')}
       </p>
+      <label className="checkbox-row micro">
+        <input
+          type="checkbox"
+          checked={autoAnalyze}
+          onChange={(e) => setAutoAnalyze(e.target.checked)}
+        />
+        Auto-analyze scenes found at whichever candidate I add below (reuses this case's AIS +
+        environment inputs; otherwise scenes are just marked ready to review)
+      </label>
       <div className="table-scroll">
         <table>
           <thead>
@@ -87,7 +100,9 @@ export function NextBestObservation({
                     onClick={async () => {
                       setBusy(c.id);
                       try {
-                        await post(`/cases/${caseId}/next-observations/${c.id}/watch?run_id=${runId}`);
+                        await post(
+                          `/cases/${caseId}/next-observations/${c.id}/watch?run_id=${runId}&auto_analyze=${autoAnalyze}`,
+                        );
                         onWatchCreated(c.target_type);
                       } catch (e) {
                         setError((e as Error).message);
@@ -126,6 +141,7 @@ function WatchAreaForm({ onCreated }: { onCreated: () => void }) {
         center: [Number(f.get('lon')), Number(f.get('lat'))],
         radius_km: Number(f.get('radius')),
         interval_minutes: Number(f.get('interval')),
+        auto_analyze: f.get('auto_analyze') === 'on',
       });
       (e.target as HTMLFormElement).reset();
       onCreated();
@@ -161,6 +177,12 @@ function WatchAreaForm({ onCreated }: { onCreated: () => void }) {
           <input name="interval" type="number" min="5" max="1440" defaultValue="15" required />
         </label>
       </div>
+      <label className="checkbox-row">
+        <input type="checkbox" name="auto_analyze" />
+        Auto-analyze new scenes (creates a case and runs the pipeline automatically; only
+        works when this watch is linked to a case with real AIS + environment inputs to reuse
+        — otherwise scenes are marked WAITING FOR DATA instead)
+      </label>
       <button className="primary" disabled={busy}>
         {busy ? 'Creating…' : 'Create watch area'}
       </button>
@@ -245,7 +267,10 @@ export default function CopernicusMonitor() {
                 <td>
                   <span className={statusClass(a.last_status)}>{a.last_status || 'PENDING'}</span>
                   <br />
-                  <small className="muted">{a.status}</small>
+                  <small className="muted">
+                    {a.status}
+                    {a.auto_analyze ? ' · AUTO-ANALYZE ON' : ''}
+                  </small>
                 </td>
                 <td style={{ maxWidth: 260 }}>
                   <small>{a.last_message || '—'}</small>
@@ -285,6 +310,20 @@ export default function CopernicusMonitor() {
                     }}
                   >
                     {a.status === 'ACTIVE' ? '❚❚' : '►'}
+                  </button>
+                  <button
+                    className="icon-button"
+                    title={a.auto_analyze ? 'Turn auto-analyze off' : 'Turn auto-analyze on'}
+                    onClick={async () => {
+                      await fetch(`/api/v1/copernicus/watch-areas/${a.id}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ auto_analyze: !a.auto_analyze }),
+                      });
+                      await refresh();
+                    }}
+                  >
+                    {a.auto_analyze ? 'AUTO' : 'auto'}
                   </button>
                   <button
                     className="icon-button"

@@ -182,19 +182,19 @@ export default function MaritimeMap({
           ).addTo(g);
     }
     if (show.slick)
-      geo(a.spill.geometry, '#ff5b65', 0.25).bindTooltip(
+      geo(a.spill.geometry, '#FF5B69', 0.25).bindTooltip(
         'OBSERVED dark-region candidate · pollutant UNKNOWN',
       );
     if (show.origin)
-      geo(a.origin.geometry, '#4fe3ca', 0.09, '4 6').bindTooltip(
+      geo(a.origin.geometry, '#9B8AFB', 0.09, '4 6').bindTooltip(
         'MODELED origin region · conditional uncertainty, not a known release point',
       );
     if (show.hindcast) {
       const s = current?.hours < 0 ? current : null;
       if (s) {
-        geo(s.geometry, '#66dfc4', 0.08, '2 4');
-        for (const p of s.particles || []) dot(p, '#66dfc4', 2);
-      } else for (const p of a.origin.particles) dot(p, '#66dfc4', 2);
+        geo(s.geometry, '#9B8AFB', 0.08, '2 4');
+        for (const p of s.particles || []) dot(p, '#9B8AFB', 2);
+      } else for (const p of a.origin.particles) dot(p, '#9B8AFB', 2);
     }
     const predicted =
       current?.hours < 0
@@ -203,11 +203,11 @@ export default function MaritimeMap({
           ? current
           : a.forecast.steps.find((s: Json) => s.hours === forecastHour);
     if (predicted && show.forecast)
-      geo(predicted.geometry, '#eeaa4d', 0.12, '5 6').bindTooltip(
+      geo(predicted.geometry, '#5BA7FF', 0.12, '5 6').bindTooltip(
         `PREDICTED conditional envelope +${predicted.hours} h`,
       );
     if (predicted && show.particles)
-      for (const p of predicted.particles || []) dot(p, '#eeaa4d', 2);
+      for (const p of predicted.particles || []) dot(p, '#5BA7FF', 2);
     if (show.receptors)
       for (const f of a.receptors.features)
         geo(f, '#baa2ff', 0.08, '3 5').bindTooltip(
@@ -217,7 +217,7 @@ export default function MaritimeMap({
         );
     if (show.sar)
       for (const r of a.dark.sar_returns)
-        dot(r.coordinates, r.matched ? '#7ebba9' : '#efa968', 5).bindTooltip(
+        dot(r.coordinates, r.matched ? '#5DD39E' : '#FFB547', 5).bindTooltip(
           label(
             `SCREENING SAR return · ${r.matched ? 'AIS match within tolerance' : 'unmatched; not a confirmed dark vessel'}`,
           ),
@@ -247,7 +247,7 @@ export default function MaritimeMap({
     }
     for (const v of a.vessels) {
       const active = v.mmsi === selected,
-        color = active ? '#f8d788' : '#38bdf8';
+        color = active ? '#35D3D1' : '#5BA7FF';
       if (active && show.track)
         L.geoJSON(v.geometry, { style: { color, weight: 2.5, opacity: 0.9, dashArray: '5 6' } })
           .addTo(g)
@@ -256,7 +256,7 @@ export default function MaritimeMap({
           );
       if (active && show.gaps)
         for (const gap of v.gaps)
-          geo(gap.corridor, '#eeaa4d', 0.08, '2 4').bindTooltip(
+          geo(gap.corridor, '#FFB547', 0.08, '2 4').bindTooltip(
             'ASSUMED possible travel envelope during missing AIS interval',
           );
       if (!show.ais || !v.track.length) continue;
@@ -278,16 +278,16 @@ export default function MaritimeMap({
     }
     if (response) {
       if (show.assets && response.asset)
-        dot(response.asset.coordinates, '#d5b7ff', 7).bindTooltip(
+        dot(response.asset.coordinates, '#FFB547', 7).bindTooltip(
           label(`ASSUMED ${response.asset.name} · availability unverified`),
         );
       if (show.intervention) {
-        geo(response.candidate_interception_zone, '#d5b7ff', 0.04, '6 6');
+        geo(response.candidate_interception_zone, '#FFB547', 0.04, '6 6');
         if (response.route)
-          geo(response.route, '#d5b7ff', 0, '4 4').bindTooltip(
+          geo(response.route, '#FFB547', 0, '4 4').bindTooltip(
             'ASSUMED geodesic planning route · navigation not modeled',
           );
-        dot(response.target, '#d5b7ff', 5).bindTooltip(
+        dot(response.target, '#FFB547', 5).bindTooltip(
           'Planning target · not guaranteed interception',
         );
       }
@@ -378,19 +378,19 @@ export default function MaritimeMap({
       )}
       <div className="map-legend">
         <span>
-          <i style={{ background: '#ff5b65' }} />
+          <i style={{ background: '#FF5B69' }} />
           OBSERVED candidate
         </span>
         <span>
-          <i style={{ background: '#4fe3ca' }} />
+          <i style={{ background: '#9B8AFB' }} />
           MODELED region
         </span>
         <span>
-          <i style={{ background: '#eeaa4d' }} />
+          <i style={{ background: '#5BA7FF' }} />
           PREDICTED envelope
         </span>
         <span>
-          <i style={{ background: '#d5b7ff' }} />
+          <i style={{ background: '#FFB547' }} />
           ASSUMED response
         </span>
       </div>

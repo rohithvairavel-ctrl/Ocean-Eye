@@ -17,7 +17,10 @@ def next_observations(case_id: str, run_id: str | None = None):
 
 
 @router.post("/cases/{case_id}/next-observations/{candidate_id}/watch")
-def watch_candidate(case_id: str, candidate_id: str, run_id: str | None = None, interval_minutes: int = 15):
+def watch_candidate(
+    case_id: str, candidate_id: str, run_id: str | None = None, interval_minutes: int = 15,
+    auto_analyze: bool = False,
+):
     result = completed(case_id, run_id)
     match = next((c for c in candidates(result) if c["id"] == candidate_id), None)
     if match is None:
@@ -31,5 +34,6 @@ def watch_candidate(case_id: str, candidate_id: str, run_id: str | None = None, 
         run_id=result["run_id"],
         note=match["rationale"],
         source="next_best_observation",
+        auto_analyze=auto_analyze,
     )
     return {"watch_area": watch, "candidate": match}

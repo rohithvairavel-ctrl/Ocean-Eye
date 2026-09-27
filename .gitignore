@@ -15,3 +15,5 @@ tmp/
 *.tsbuildinfo
 
 .env
+.env.*
+!.env.example

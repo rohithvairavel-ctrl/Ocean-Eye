@@ -42,7 +42,8 @@ def init():
             interval_minutes INTEGER NOT NULL, status TEXT NOT NULL, source TEXT NOT NULL,
             case_id TEXT, run_id TEXT, note TEXT,
             last_checked TEXT, last_status TEXT, last_message TEXT,
-            consecutive_failures INTEGER NOT NULL DEFAULT 0
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            auto_analyze INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS observations(
             id TEXT PRIMARY KEY, watch_id TEXT NOT NULL, stac_id TEXT NOT NULL, collection TEXT NOT NULL,
