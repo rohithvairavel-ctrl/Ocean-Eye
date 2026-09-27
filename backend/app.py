@@ -25,6 +25,10 @@ async def lifespan(app):
         db.execute(
             "UPDATE runs SET state='FAILED',error='Server stopped before completion; rerun this case' WHERE state='RUNNING'"
         )
+    from . import acquisition_plan, marine
+
+    copernicus.register_tick_hook(acquisition_plan.scheduled_refresh)
+    copernicus.register_tick_hook(marine.scheduled_refresh)
     copernicus.start_monitor()
     try:
         yield
@@ -37,11 +41,13 @@ from .response_api import router as response_router
 from .copernicus_api import router as copernicus_router
 from .next_observation_api import router as next_observation_router
 from .truthloop_api import router as truthloop_router
+from .live_data_api import router as live_data_router
 
 app.include_router(response_router)
 app.include_router(copernicus_router)
 app.include_router(next_observation_router)
 app.include_router(truthloop_router)
+app.include_router(live_data_router)
 
 
 @app.middleware("http")
@@ -82,6 +88,7 @@ def health():
         "database": "SQLite",
         "geospatial_engine": "Rasterio / PyProj / Shapely",
         "copernicus_configured": copernicus.credentials_configured(),
+        "public_catalogue_search": True,
     }
 
 

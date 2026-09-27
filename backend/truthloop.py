@@ -84,13 +84,13 @@ def _challenge_result(id_, label, description, method, baseline_ranking, after_v
         explanation = note or "This challenge could not be run against this run's evidence."
     elif changed:
         explanation = (
-            f"Ranking reverses when {label.lower()} is applied: "
+            f"Ranking reverses under “{label}”: "
             f"{baseline_ranking[0]['name']} ({baseline_ranking[0]['score']}/100) drops from #1, "
             f"replaced by {after_ranking[0]['name']} ({after_ranking[0]['score']}/100)."
         )
     else:
         top = after_ranking[0]
-        explanation = f"{top['name']} remains the top-ranked candidate ({top['score']}/100) after {label.lower()}."
+        explanation = f"{top['name']} remains the top-ranked candidate ({top['score']}/100) under “{label}”."
     return {
         "id": id_,
         "label": label,
@@ -561,10 +561,7 @@ def discriminating_evidence(result):
 # --------------------------------------------------------------------------
 
 
-def derive(result):
-    weights = _base_weights(result)
-    challenges = run_all_challenges(result)
-    stability = conclusion_stability(result, challenges)
+def _common(result):
     fragility = evidence_fragility(result)
     return {
         "model_version": MODEL_VERSION,
@@ -576,10 +573,37 @@ def derive(result):
             "functions; not an LLM and not a probability model."
         ),
         "hypotheses": build_hypotheses(result),
-        "weights": weights,
-        "challenges": challenges,
-        "stability": stability,
+        "weights": _base_weights(result),
+        "baseline_ranking": _ranking_summary(result.get("vessels") or []),
         "fragility": fragility,
         "most_dependent_factor": most_dependent_factor(fragility),
         "discriminating_evidence": discriminating_evidence(result),
+    }
+
+
+def unchallenged(result):
+    """What TruthLoop knows before the analyst challenges the conclusion: the
+    competing hypotheses, fragility and evidence gaps -- but no stability verdict,
+    because no challenge has been run yet."""
+    return {
+        **_common(result),
+        "challenged": False,
+        "challenges": [],
+        "stability": {
+            "state": "NOT_CHALLENGED",
+            "reasons": ["The leading conclusion has not been challenged for this run yet."],
+            "reversals": [],
+            "challenges_run": 0,
+            "challenges_available": 7,
+        },
+    }
+
+
+def derive(result):
+    challenges = run_all_challenges(result)
+    return {
+        **_common(result),
+        "challenged": True,
+        "challenges": challenges,
+        "stability": conclusion_stability(result, challenges),
     }

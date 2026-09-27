@@ -83,9 +83,19 @@ def test_truthloop_endpoint_runs_real_challenges(isolated):
         case_id = case["id"]
         analysis = c.get(f"/api/v1/cases/{case_id}/analysis").json()
 
-        view = c.get(f"/api/v1/cases/{case_id}/truthloop").json()
+        # Before anyone challenges the conclusion there is no stability verdict.
+        before = c.get(f"/api/v1/cases/{case_id}/truthloop").json()
+        assert before["challenged"] is False
+        assert before["stability"]["state"] == "NOT_CHALLENGED"
+        assert before["challenges"] == []
+        assert before["baseline_ranking"][0]["mmsi"] == analysis["vessels"][0]["mmsi"]
+
+        # CHALLENGE THIS CONCLUSION: a real, persisted, audited recomputation.
+        view = c.post(f"/api/v1/cases/{case_id}/truthloop/challenge").json()
         assert view["model_version"] == truthloop.MODEL_VERSION
         assert view["run_id"] == analysis["run_id"]
+        assert view["challenged"] is True
+        assert len(view["sha256"]) == 64 and view["challenged_at"]
 
         # A. competing hypotheses
         ids = [h["id"] for h in view["hypotheses"]]
@@ -131,13 +141,15 @@ def test_truthloop_endpoint_runs_real_challenges(isolated):
             cand["id"] for cand in next_obs["candidates"]
         }
 
-        # CHALLENGE THIS CONCLUSION action + audit trail
-        challenged = c.post(f"/api/v1/cases/{case_id}/truthloop/challenge").json()
-        assert challenged["stability"]["state"] == view["stability"]["state"]
+        # The recorded challenge is what GET now returns (same hash), and it is audited.
+        after = c.get(f"/api/v1/cases/{case_id}/truthloop").json()
+        assert after["challenged"] is True and after["sha256"] == view["sha256"]
+        assert after["stability"]["state"] == view["stability"]["state"]
+        again = c.post(f"/api/v1/cases/{case_id}/truthloop/challenge").json()
+        assert again["stability"]["state"] == view["stability"]["state"]  # deterministic
         events = c.get(f"/api/v1/cases/{case_id}/audit").json()
         actions = [e["action"] for e in events]
-        assert "truthloop_viewed" in actions
-        assert "truthloop_challenge_run" in actions
+        assert actions.count("truthloop_challenge_run") == 2
 
 
 def test_removing_ais_gap_reverses_ranking_when_it_is_decisive(isolated):

@@ -36,20 +36,40 @@ STAC_ITEMS_URL = "https://stac.dataspace.copernicus.eu/v1/collections/{collectio
 PROCESS_URL = "https://sh.dataspace.copernicus.eu/process/v1"
 COLLECTION = "sentinel-1-grd"
 
-DEFAULT_INTERVAL_MINUTES = 15
 MIN_INTERVAL_MINUTES = 5
 MAX_INTERVAL_MINUTES = 1440
+
+
+def _configured_interval():
+    """Catalogue polling interval for new watch areas (minutes). Default 15,
+    overridable with OCEANEYE_CATALOGUE_POLL_MINUTES; clamped to the valid range."""
+    try:
+        value = int(os.environ.get("OCEANEYE_CATALOGUE_POLL_MINUTES", "15"))
+    except ValueError:
+        value = 15
+    return max(MIN_INTERVAL_MINUTES, min(MAX_INTERVAL_MINUTES, value))
+
+
+DEFAULT_INTERVAL_MINUTES = _configured_interval()
 MAX_BACKOFF_MINUTES = 120
 POLL_GRANULARITY_SECONDS = 30
 SEARCH_WINDOW_DAYS = 10
+SYNC_STALE_SECONDS = 180  # a SYNCING marker older than this is treated as interrupted
+IMAGERY_RETRY_LIMIT = 3  # previously AUTH_REQUIRED scenes retried per pass once credentials exist
 
 _token_cache = {"value": None, "expires_at": 0.0}
 _monitor_task = None
 _monitor_stop = False
+_scheduler = {"running": False, "last_tick_at": None, "next_tick_at": None}
+_background_hooks = []  # callables run (in a thread) once per scheduler tick; see register_tick_hook
 
 
 class CredentialsMissing(RuntimeError):
     """Raised when CDSE_CLIENT_ID / CDSE_CLIENT_SECRET are absent or rejected."""
+
+
+class RateLimited(RuntimeError):
+    """Raised when a Copernicus endpoint answers HTTP 429."""
 
 
 def credentials_configured():
@@ -111,6 +131,8 @@ def stac_search(client: httpx.Client, token, bbox, start, end, limit=10):
     )
     if response.status_code == 401:
         raise CredentialsMissing("Copernicus STAC search returned 401; token expired or invalid.")
+    if response.status_code == 429:
+        raise RateLimited("Copernicus STAC search is rate limiting requests (HTTP 429).")
     response.raise_for_status()
     return response.json().get("features", [])
 
@@ -135,8 +157,48 @@ def stac_search_public(client: httpx.Client, bbox, start, end, limit=10):
     )
     if response.status_code in (401, 403):
         return None
+    if response.status_code == 429:
+        raise RateLimited("The public Copernicus STAC catalogue is rate limiting requests (HTTP 429).")
     response.raise_for_status()
     return response.json().get("features", [])
+
+
+def _first(props, *keys):
+    for key in keys:
+        value = props.get(key)
+        if value not in (None, "", []):
+            return value
+    return None
+
+
+def scene_metadata(feature):
+    """Normalize the metadata a STAC item actually carries. Missing fields stay
+    None -- nothing here is inferred or invented."""
+    props = feature.get("properties") or {}
+    platform = _first(props, "platform", "platformSerialIdentifier")
+    self_link = next(
+        (link.get("href") for link in feature.get("links", []) if link.get("rel") == "self"),
+        None,
+    )
+    return {
+        "stac_id": feature.get("id"),
+        "platform": platform.upper().replace("SENTINEL-", "Sentinel-") if isinstance(platform, str) else None,
+        "constellation": props.get("constellation"),
+        "acquired": _first(props, "datetime", "start_datetime"),
+        "start": props.get("start_datetime"),
+        "end": props.get("end_datetime"),
+        "instrument_mode": _first(props, "sar:instrument_mode", "sensorMode"),
+        "product_type": _first(props, "sar:product_type", "product:type", "productType"),
+        "polarizations": _first(props, "sar:polarizations", "polarisation"),
+        "orbit_state": _first(props, "sat:orbit_state", "orbitDirection"),
+        "relative_orbit": _first(props, "sat:relative_orbit", "relativeOrbitNumber"),
+        "absolute_orbit": _first(props, "sat:absolute_orbit", "orbitNumber"),
+        "processing_level": _first(props, "processing:level", "processingLevel"),
+        "timeliness": _first(props, "product:timeliness_category", "timeliness"),
+        "published": _first(props, "published", "created"),
+        "footprint": feature.get("geometry"),
+        "source_url": self_link or STAC_ITEMS_URL.format(collection=COLLECTION) + f"/{feature.get('id')}",
+    }
 
 
 def sigma0_db(linear, epsilon=1e-10):
@@ -193,8 +255,35 @@ def process_backscatter(client: httpx.Client, token, bbox, time_range, width=512
     )
     if response.status_code == 401:
         raise CredentialsMissing("Sentinel Hub Process API returned 401; token expired or invalid.")
+    if response.status_code == 429:
+        raise RateLimited("Sentinel Hub Process API is rate limiting requests (HTTP 429).")
     response.raise_for_status()
     return response.content
+
+
+def scene_time_range(feature, fallback_end):
+    """Time range that selects exactly this STAC scene in the Process API
+    (its own start/end), rather than whatever was most recent in the window."""
+    props = feature.get("properties") or {}
+    start, end = props.get("start_datetime"), props.get("end_datetime")
+    if start and end:
+        return start, end
+    acquired = props.get("datetime")
+    if acquired:
+        t = parse_timestamp(acquired)
+        return (
+            (t - timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
+            (t + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
+        )
+    return fallback_end, fallback_end
+
+
+def _imagery_state(**update):
+    state = storage.get_provider_state("sentinel1_imagery") or {}
+    state.pop("updated", None)
+    state.update(update)
+    storage.set_provider_state("sentinel1_imagery", state)
+    return state
 
 
 def bbox_for(center, radius_km):
@@ -210,8 +299,24 @@ def bbox_for(center, radius_km):
 # ---------------------------------------------------------------------------
 
 
-def create_watch_area(name, center, radius_km, interval_minutes=DEFAULT_INTERVAL_MINUTES,
-                       case_id=None, run_id=None, note="", source="operator", auto_analyze=False):
+def find_watch_by_origin(origin_ref):
+    """An ACTIVE or PAUSED watch area already created from the same source
+    (e.g. the same Next-Best-Observation candidate of the same run)."""
+    if not origin_ref:
+        return None
+    with storage.connect() as db:
+        row = db.execute(
+            "SELECT id FROM watch_areas WHERE origin_ref=? ORDER BY created DESC LIMIT 1",
+            (origin_ref,),
+        ).fetchone()
+    return get_watch_area(row["id"]) if row else None
+
+
+def create_watch_area(name, center, radius_km, interval_minutes=None,
+                       case_id=None, run_id=None, note="", source="operator", auto_analyze=False,
+                       origin_ref=None):
+    if interval_minutes is None:
+        interval_minutes = DEFAULT_INTERVAL_MINUTES
     if not (-180 <= center[0] <= 180 and -90 <= center[1] <= 90):
         raise ValueError("center must be [longitude, latitude] in WGS84")
     if not (0 < radius_km <= 500):
@@ -227,10 +332,11 @@ def create_watch_area(name, center, radius_km, interval_minutes=DEFAULT_INTERVAL
             """INSERT INTO watch_areas(
                 id,name,created,center_lon,center_lat,radius_km,interval_minutes,status,source,
                 case_id,run_id,note,last_checked,last_status,last_message,consecutive_failures,
-                auto_analyze
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
+                auto_analyze,origin_ref
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)""",
             (watch_id, name, now, center[0], center[1], radius_km, interval_minutes, "ACTIVE",
-             source, case_id, run_id, note, None, "PENDING", None, int(bool(auto_analyze))),
+             source, case_id, run_id, note, None, "PENDING", None, int(bool(auto_analyze)),
+             origin_ref),
         )
     storage.audit(
         case_id or "global",
@@ -309,14 +415,33 @@ def list_observations(watch_id):
 # ---------------------------------------------------------------------------
 
 
-def _record_status(watch_id, status, message):
+def _mark_syncing(watch_id):
+    """Record that a real catalogue query is in flight. Does not touch
+    last_checked or the failure counter -- only a completed pass does."""
+    with storage.connect() as db:
+        db.execute(
+            "UPDATE watch_areas SET sync_started=?, last_status='SYNCING' WHERE id=?",
+            (storage.now(), watch_id),
+        )
+
+
+def _record_status(watch_id, status, message, scene_count=None, new_count=0):
+    now = storage.now()
     with storage.connect() as db:
         row = db.execute("SELECT consecutive_failures FROM watch_areas WHERE id=?", (watch_id,)).fetchone()
         failures = row["consecutive_failures"] if row else 0
-        failures = 0 if status == "OK" else failures + 1
+        ok = status == "OK"
+        failures = 0 if ok else failures + 1
         db.execute(
-            "UPDATE watch_areas SET last_checked=?, last_status=?, last_message=?, consecutive_failures=? WHERE id=?",
-            (storage.now(), status, message, failures, watch_id),
+            """UPDATE watch_areas SET last_checked=?, last_status=?, last_message=?,
+                consecutive_failures=?, sync_started=NULL,
+                last_success=CASE WHEN ? THEN ? ELSE last_success END,
+                last_error=CASE WHEN ? THEN last_error ELSE ? END,
+                last_scene_count=COALESCE(?, last_scene_count),
+                last_new_at=CASE WHEN ? > 0 THEN ? ELSE last_new_at END
+            WHERE id=?""",
+            (now, status, message, failures, ok, now, ok, message, scene_count,
+             new_count, now, watch_id),
         )
     return failures
 
@@ -351,6 +476,88 @@ def _save_calibrated_geotiff(stac_id, raw_linear_tiff_bytes, feature):
     return path.name, storage.digest(path)
 
 
+def _dynamic_forcing(area, cfg, stac_id, acquired):
+    """When Copernicus Marine access is genuinely available, retrieve currents
+    for exactly this acquisition's hindcast/forecast window over the watch AOI
+    and store them in the existing forcing format. Returns the relative path of
+    the forcing file, or None (the linked case's forcing is then reused and the
+    dependency check decides whether that is valid). Never simulated."""
+    from . import marine
+
+    if not (marine.toolbox_available() and marine.credentials_configured()):
+        return None
+    window = cfg.get("release_window")
+    if not window:
+        return None
+    try:
+        obs = parse_timestamp(acquired)
+        start = parse_timestamp(window[0]) - timedelta(hours=1)
+        if not timedelta(0) < obs - start <= timedelta(hours=98):
+            return None
+        bbox = bbox_for([area["center_lon"], area["center_lat"]], max(area["radius_km"], 25))
+        series = marine.fetch_surface_currents(bbox, start, obs + timedelta(hours=49))
+        env = marine.build_environment(series, [round(v, 4) for v in bbox])
+        safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in stac_id)
+        path = DATA / "environment" / f"marine_{safe}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(env, indent=2), encoding="utf-8")
+        return str(path.relative_to(DATA))
+    except Exception:  # recorded by the dependency check that follows
+        traceback.print_exc()
+        return None
+
+
+def auto_analyze_dependencies(cfg, acquired):
+    """What a linked case is missing before a newly acquired scene can be run
+    through the existing pipeline. Returns human-readable missing inputs; an
+    empty list means every dependency is genuinely satisfied. Nothing is
+    shifted or synthesised to make a check pass."""
+    import json as _json
+
+    from .drift import validate_environment
+
+    missing = []
+    if not cfg.get("ais"):
+        missing.append("AIS data is required before vessel attribution can run")
+    if not cfg.get("environment"):
+        missing.append("Environmental forcing (currents/wind) is required for hindcast and forecast")
+    window = cfg.get("release_window")
+    obs = parse_timestamp(acquired)
+    if not window:
+        missing.append("An analyst-supplied release-window assumption")
+        return missing
+    start, end = parse_timestamp(window[0]), parse_timestamp(window[1])
+    age_min = (obs - end).total_seconds() / 3600
+    age_max = (obs - start).total_seconds() / 3600
+    if not (0 < age_min <= age_max <= 96):
+        missing.append(
+            "A release-window assumption within 96 h before this acquisition "
+            f"(linked case window {window[0]} – {window[1]} does not precede it)"
+        )
+        return missing
+    if cfg.get("environment"):
+        try:
+            env = _json.loads((DATA / cfg["environment"]).read_text(encoding="utf-8-sig"))
+            validate_environment(env, acquired, window)
+        except (OSError, ValueError) as exc:
+            missing.append(f"Environmental forcing covering the release window through +48 h ({exc})")
+    if cfg.get("ais"):
+        try:
+            from . import ais as _ais
+
+            tracks, _quality = _ais.load_ais(DATA / cfg["ais"])
+            overlaps = any(
+                start <= parse_timestamp(p["time"]) <= obs
+                for points in tracks.values()
+                for p in points
+            )
+            if not overlaps:
+                missing.append("AIS observations overlapping the release window")
+        except (OSError, ValueError, KeyError) as exc:
+            missing.append(f"Readable AIS input ({exc})")
+    return missing
+
+
 def _attempt_auto_analyze(area, stac_id, artifact_name, feature):
     """Try to close the loop: new calibrated scene -> real case -> engine run.
 
@@ -366,6 +573,7 @@ def _attempt_auto_analyze(area, stac_id, artifact_name, feature):
     if not case_id:
         return {
             "status": "WAITING_FOR_DATA",
+            "missing": ["A linked case supplying AIS and environmental inputs"],
             "reason": (
                 "No case is linked to this watch area, so there is no AIS or environment "
                 "input to run the pipeline against. Link a watch area to a case (e.g. via "
@@ -375,12 +583,24 @@ def _attempt_auto_analyze(area, stac_id, artifact_name, feature):
     try:
         source_case = storage.get_case(case_id)
     except KeyError:
-        return {"status": "WAITING_FOR_DATA", "reason": f"Linked case {case_id} no longer exists."}
-    cfg = source_case["config"]
-    if not cfg.get("ais") or not cfg.get("environment"):
         return {
             "status": "WAITING_FOR_DATA",
-            "reason": "Linked case has no AIS or environment input on file to reuse.",
+            "missing": ["The linked case"],
+            "reason": f"Linked case {case_id} no longer exists.",
+        }
+    cfg = dict(source_case["config"])
+    acquired_value = feature.get("properties", {}).get("datetime") or storage.now()
+    dynamic_forcing = _dynamic_forcing(area, cfg, stac_id, acquired_value)
+    if dynamic_forcing:
+        cfg["environment"] = dynamic_forcing
+        cfg.setdefault("sources", {})
+        cfg["sources"] = {**cfg["sources"], "environment": "REAL"}
+    missing = auto_analyze_dependencies(cfg, acquired_value)
+    if missing:
+        return {
+            "status": "WAITING_FOR_DATA",
+            "missing": missing,
+            "reason": "Auto-analyze did not start: " + "; ".join(missing) + ".",
         }
     import uuid as uuid_module
 
@@ -453,11 +673,89 @@ def _attempt_auto_analyze(area, stac_id, artifact_name, feature):
     }
 
 
+def _fetch_imagery(client, area, feature, bbox, window_end, token, provenance):
+    """Calibrated SIGMA0 retrieval + optional auto-analyze for one discovered
+    scene. Returns (status, artifact_name, sha256, token). Never simulates:
+    without real OAuth2 credentials the status is AUTH_REQUIRED."""
+    stac_id = feature.get("id")
+    artifact_name, sha256 = None, None
+    _imagery_state(last_attempt=storage.now())
+    try:
+        imagery_token = token or get_token(client)
+        token = imagery_token
+        raw = process_backscatter(client, imagery_token, bbox, scene_time_range(feature, window_end))
+        artifact_name, sha256 = _save_calibrated_geotiff(stac_id, raw, feature)
+        _imagery_state(last_success=storage.now(), last_error=None, last_status="OK")
+        status = "READY_TO_IMPORT"
+        if area.get("auto_analyze"):
+            outcome = _attempt_auto_analyze(area, stac_id, artifact_name, feature)
+            provenance["auto_analyze"] = outcome
+            status = outcome["status"]
+    except CredentialsMissing as exc:
+        status = "AUTH_REQUIRED"
+        provenance["fetch_error"] = str(exc)
+        _imagery_state(last_error=str(exc), last_status="AUTH_REQUIRED")
+    except RateLimited as exc:
+        status = "FETCH_FAILED"
+        provenance["fetch_error"] = str(exc)
+        _imagery_state(last_error=str(exc), last_status="RATE_LIMITED")
+    except httpx.HTTPError as exc:
+        status = "FETCH_FAILED"
+        provenance["fetch_error"] = str(exc)
+        _imagery_state(last_error=str(exc), last_status="OFFLINE")
+    except Exception as exc:  # pragma: no cover - defensive
+        traceback.print_exc()
+        status = "FETCH_FAILED"
+        provenance["fetch_error"] = str(exc)
+        _imagery_state(last_error=str(exc), last_status="ERROR")
+    if area.get("auto_analyze") and status == "AUTH_REQUIRED":
+        provenance["auto_analyze"] = {
+            "status": "BLOCKED",
+            "missing": ["Calibrated Sentinel-1 imagery (requires CDSE OAuth client credentials)"],
+            "reason": "Auto-analyze cannot start without calibrated SAR imagery; catalogue discovery alone is not analysable.",
+        }
+    return status, artifact_name, sha256, token
+
+
+def _retry_pending_imagery(client, area, bbox, window_end, token):
+    """Scenes discovered while credentials were missing are retried (a few per
+    pass) once credentials exist, instead of being deduplicated forever."""
+    if not credentials_configured():
+        return token, 0
+    with storage.connect() as db:
+        rows = db.execute(
+            "SELECT * FROM observations WHERE watch_id=? AND status IN ('AUTH_REQUIRED','FETCH_FAILED') "
+            "ORDER BY acquired DESC LIMIT ?",
+            (area["id"], IMAGERY_RETRY_LIMIT),
+        ).fetchall()
+    retried = 0
+    for row in rows:
+        provenance = json.loads(row["provenance"])
+        feature = {
+            "id": row["stac_id"],
+            "properties": provenance.get("properties", {}),
+            "geometry": (provenance.get("scene") or {}).get("footprint"),
+        }
+        provenance.pop("fetch_error", None)
+        status, artifact_name, sha256, token = _fetch_imagery(
+            client, area, feature, bbox, window_end, token, provenance
+        )
+        provenance.setdefault("imagery_retries", []).append({"time": storage.now(), "status": status})
+        with storage.connect() as db:
+            db.execute(
+                "UPDATE observations SET status=?, artifact=?, sha256=?, provenance=? WHERE id=?",
+                (status, artifact_name, sha256, storage.canonical(provenance), row["id"]),
+            )
+        retried += 1
+    return token, retried
+
+
 def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=True):
     """Run one discovery pass for a single watch area. Never raises; returns a status dict."""
     owns_client = client is None
     client = client or httpx.Client()
     watch_id = area["id"]
+    _mark_syncing(watch_id)
     try:
         bbox = bbox_for([area["center_lon"], area["center_lat"]], area["radius_km"])
         end = datetime.now(timezone.utc)
@@ -479,6 +777,9 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
         except CredentialsMissing as exc:
             _record_status(watch_id, "AUTH_REQUIRED", str(exc))
             return {"watch_id": watch_id, "status": "AUTH_REQUIRED", "message": str(exc)}
+        except RateLimited as exc:
+            _record_status(watch_id, "RATE_LIMITED", str(exc))
+            return {"watch_id": watch_id, "status": "RATE_LIMITED", "message": str(exc)}
         except httpx.HTTPError as exc:
             message = f"Network error reaching Copernicus Data Space: {exc}"
             _record_status(watch_id, "OFFLINE", message)
@@ -498,6 +799,8 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
             stac_id = feature.get("id")
             if not stac_id or stac_id in known:
                 continue
+            known.add(stac_id)
+            scene = scene_metadata(feature)
             provenance = {
                 "stac_id": stac_id,
                 "collection": COLLECTION,
@@ -508,32 +811,13 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
                 "watch_center": [area["center_lon"], area["center_lat"]],
                 "watch_radius_km": area["radius_km"],
                 "catalogue_source": catalogue_source,
+                "scene": scene,
             }
             status, artifact_name, sha256 = "DISCOVERED", None, None
             if fetch_imagery:
-                acquired = feature.get("properties", {}).get("datetime") or window[1]
-                try:
-                    # Discovery may have used the public, unauthenticated catalogue
-                    # (token is still None here); imagery retrieval always needs a
-                    # real OAuth2 token, so fetch one now if we haven't already.
-                    imagery_token = token or get_token(client)
-                    raw = process_backscatter(client, imagery_token, bbox, (window[0], acquired))
-                    artifact_name, sha256 = _save_calibrated_geotiff(stac_id, raw, feature)
-                    status = "READY_TO_IMPORT"
-                    if area.get("auto_analyze"):
-                        outcome = _attempt_auto_analyze(area, stac_id, artifact_name, feature)
-                        provenance["auto_analyze"] = outcome
-                        status = outcome["status"]
-                except CredentialsMissing as exc:
-                    status = "AUTH_REQUIRED"
-                    provenance["fetch_error"] = str(exc)
-                except httpx.HTTPError as exc:
-                    status = "FETCH_FAILED"
-                    provenance["fetch_error"] = str(exc)
-                except Exception as exc:  # pragma: no cover - defensive
-                    traceback.print_exc()
-                    status = "FETCH_FAILED"
-                    provenance["fetch_error"] = str(exc)
+                status, artifact_name, sha256, token = _fetch_imagery(
+                    client, area, feature, bbox, window[1], token, provenance
+                )
             obs_id = str(uuid.uuid4())
             with storage.connect() as db:
                 db.execute(
@@ -541,21 +825,33 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
                         id,watch_id,stac_id,collection,acquired,created,mode,status,artifact,sha256,provenance
                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                     (obs_id, watch_id, stac_id, COLLECTION,
-                     feature.get("properties", {}).get("datetime"), storage.now(), "REAL",
+                     scene["acquired"], storage.now(), "REAL",
                      status, artifact_name, sha256, storage.canonical(provenance)),
                 )
             storage.audit(
                 area.get("case_id") or "global", "copernicus_observation",
-                {"watch_id": watch_id, "stac_id": stac_id, "status": status},
+                {
+                    "watch_id": watch_id, "stac_id": stac_id, "status": status,
+                    "platform": scene["platform"], "acquired": scene["acquired"],
+                },
             )
-            new_records.append({"stac_id": stac_id, "status": status})
+            new_records.append(
+                {"stac_id": stac_id, "status": status, "platform": scene["platform"],
+                 "acquired": scene["acquired"]}
+            )
+        retried = 0
+        if fetch_imagery:
+            token, retried = _retry_pending_imagery(client, area, bbox, window[1], token)
+        outcome = "NEW_EARTH_OBSERVATION" if new_records else "NO_NEW_ACQUISITION"
         _record_status(
             watch_id, "OK",
             f"{len(new_records)} new observation(s) of {len(features)} scene(s) in a {SEARCH_WINDOW_DAYS}-day window",
+            scene_count=len(features), new_count=len(new_records),
         )
         return {
-            "watch_id": watch_id, "status": "OK",
+            "watch_id": watch_id, "status": "OK", "outcome": outcome,
             "new_observations": new_records, "scenes_in_window": len(features),
+            "imagery_retried": retried, "catalogue_source": catalogue_source,
         }
     finally:
         if owns_client:
@@ -567,15 +863,61 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
 # ---------------------------------------------------------------------------
 
 
-def _due(area):
+def effective_interval_minutes(area):
+    """Configured interval, backed off exponentially after consecutive failures."""
+    failures = area.get("consecutive_failures") or 0
+    return min(area["interval_minutes"] * (2 ** min(failures, 4)), MAX_BACKOFF_MINUTES)
+
+
+def due_at(area):
+    """Earliest moment this watch area becomes due (None if paused)."""
     if area["status"] != "ACTIVE":
-        return False
+        return None
     if not area["last_checked"]:
-        return True
-    failures = area["consecutive_failures"] or 0
-    effective_minutes = min(area["interval_minutes"] * (2 ** min(failures, 4)), MAX_BACKOFF_MINUTES)
-    elapsed = (datetime.now(timezone.utc) - parse_timestamp(area["last_checked"])).total_seconds()
-    return elapsed >= effective_minutes * 60
+        return parse_timestamp(area["created"])
+    return parse_timestamp(area["last_checked"]) + timedelta(minutes=effective_interval_minutes(area))
+
+
+def _due(area, now=None):
+    moment = due_at(area)
+    if moment is None:
+        return False
+    return (now or datetime.now(timezone.utc)) >= moment
+
+
+def next_check_at(area, now=None, scheduler=None):
+    """When the scheduler will actually run the next catalogue query for this
+    area: the first scheduler tick at or after the area becomes due. Derived
+    from the real scheduler state -- the frontend counts down to this value and
+    never pretends a check happened."""
+    now = now or datetime.now(timezone.utc)
+    moment = due_at(area)
+    if moment is None:
+        return None
+    scheduler = scheduler or _scheduler
+    tick = scheduler.get("next_tick_at")
+    if not scheduler.get("running") or tick is None:
+        return max(moment, now)
+    if moment <= tick:
+        return tick
+    periods = -(-(moment - tick).total_seconds() // POLL_GRANULARITY_SECONDS)
+    return tick + timedelta(seconds=periods * POLL_GRANULARITY_SECONDS)
+
+
+def scheduler_state():
+    return {
+        "running": _scheduler["running"],
+        "last_tick_at": _scheduler["last_tick_at"].isoformat() if _scheduler["last_tick_at"] else None,
+        "next_tick_at": _scheduler["next_tick_at"].isoformat() if _scheduler["next_tick_at"] else None,
+        "granularity_seconds": POLL_GRANULARITY_SECONDS,
+    }
+
+
+def register_tick_hook(fn):
+    """Lightweight periodic work (e.g. refreshing cached acquisition plans) that
+    should ride on the same scheduler instead of spawning its own loop."""
+    if fn not in _background_hooks:
+        _background_hooks.append(fn)
 
 
 async def monitor_tick():
@@ -599,15 +941,30 @@ async def monitor_tick():
 async def monitor_loop():
     global _monitor_stop
     _monitor_stop = False
-    while not _monitor_stop:
-        try:
-            await monitor_tick()
-        except Exception:  # pragma: no cover - defensive; loop must never die silently
-            traceback.print_exc()
-        for _ in range(POLL_GRANULARITY_SECONDS):
-            if _monitor_stop:
-                break
-            await asyncio.sleep(1)
+    _scheduler["running"] = True
+    try:
+        while not _monitor_stop:
+            _scheduler["last_tick_at"] = datetime.now(timezone.utc)
+            _scheduler["next_tick_at"] = None
+            try:
+                await monitor_tick()
+            except Exception:  # pragma: no cover - defensive; loop must never die silently
+                traceback.print_exc()
+            for hook in list(_background_hooks):
+                try:
+                    await asyncio.to_thread(hook)
+                except Exception:  # pragma: no cover - defensive
+                    traceback.print_exc()
+            _scheduler["next_tick_at"] = datetime.now(timezone.utc) + timedelta(
+                seconds=POLL_GRANULARITY_SECONDS
+            )
+            for _ in range(POLL_GRANULARITY_SECONDS):
+                if _monitor_stop:
+                    break
+                await asyncio.sleep(1)
+    finally:
+        _scheduler["running"] = False
+        _scheduler["next_tick_at"] = None
 
 
 def start_monitor():
@@ -645,8 +1002,13 @@ def status():
         "process_endpoint": PROCESS_URL,
         "search_window_days": SEARCH_WINDOW_DAYS,
         "poll_granularity_seconds": POLL_GRANULARITY_SECONDS,
+        "default_interval_minutes": DEFAULT_INTERVAL_MINUTES,
         "max_backoff_minutes": MAX_BACKOFF_MINUTES,
-        "watch_areas": list_watch_areas(),
+        "scheduler": scheduler_state(),
+        "watch_areas": [
+            {**a, "next_check_at": (lambda t: t.isoformat() if t else None)(next_check_at(a))}
+            for a in list_watch_areas()
+        ],
         "note": (
             "Sentinel-1 GRD scene discovery uses the Copernicus Data Space Ecosystem's public "
             "STAC catalogue and needs no credentials. Retrieving calibrated SIGMA0_ELLIPSOID "

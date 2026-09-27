@@ -82,13 +82,23 @@ def intelligence(case_id: str):
                 "id": scenario["id"],
                 "label": scenario["input"]["name"],
                 "kind": "RESPONSE SCENARIO",
+                "stage": "consequence",
                 "details": scenario,
+                "meta": {
+                    "epistemic_state": "ASSUMED",
+                    "source": "Operator-entered planning scenario",
+                    "timestamp": scenario.get("created"),
+                    "assumptions": [scenario["input"].get("asset_source", "Asset availability unverified")],
+                    "uncertainty": "Planning scenario; interception and removal are not modeled.",
+                    "artifact": f"/api/v1/scenarios/{scenario['id']}/export",
+                    "sha256": scenario.get("sha256"),
+                },
             }
         )
         view["evidence"]["edges"].extend(
             [
-                {"source": "forecast", "target": scenario["id"]},
-                {"source": scenario["id"], "target": "proof"},
+                {"source": "response", "target": scenario["id"], "label": "derived from / informs"},
+                {"source": scenario["id"], "target": "proof", "label": "derived from / informs"},
             ]
         )
         if (

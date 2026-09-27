@@ -205,93 +205,99 @@ def derive(result):
         )
     ordering = {"CRITICAL": 0, "HIGH": 1, "WATCH": 2, "INFORMATIONAL": 3}
     events.sort(key=lambda a: ordering[a["severity"]])
+    inputs = {i["role"]: i for i in result["provenance"].get("inputs", [])}
+    obs_time = result["observation_time"]
+    assets = result.get("assets", "")
+
+    def node(id_, label, kind, stage, details, *, epistemic, source, time=None,
+             assumptions=(), uncertainty=None, artifact=None, sha256=None, **extra):
+        return {
+            "id": id_,
+            "label": label,
+            "kind": kind,
+            "stage": stage,
+            "details": details,
+            "meta": {
+                "epistemic_state": epistemic,
+                "source": source,
+                "timestamp": time,
+                "assumptions": list(assumptions),
+                "uncertainty": uncertainty,
+                "artifact": artifact,
+                "sha256": sha256,
+            },
+            **extra,
+        }
+
     nodes = [
-        {
-            "id": "sar",
-            "label": "SAR acquisition",
-            "kind": "OBSERVATION",
-            "details": {"time": result["observation_time"], "sensor": spill["sensor"]},
-        },
-        {
-            "id": "preprocessing",
-            "label": "SAR preprocessing",
-            "kind": "DERIVED MEASUREMENT",
-            "details": {"method": spill["method"], "radiometry": spill["radiometry"]},
-        },
-        {
-            "id": "segmentation",
-            "label": "Dark-region mask",
-            "kind": "DERIVED MEASUREMENT",
-            "details": {
-                "area_km2": spill["area_km2"],
-                "pixels": spill["candidate_pixels"],
-            },
-        },
-        {
-            "id": "candidate",
-            "label": "Oil candidate · pending",
-            "kind": "SCREENING RESULT",
-            "details": classification,
-        },
-        {
-            "id": "release",
-            "label": "Assumed release window",
-            "kind": "ASSUMPTION",
-            "details": {"window": origin["release_window"]},
-        },
-        {
-            "id": "origin",
-            "label": "Modeled origin REGION",
-            "kind": "MODEL OUTPUT",
-            "details": {
-                "radius90_km": origin["radius90_km"],
-                "uncertainty": origin["uncertainty"],
-            },
-        },
-        {
-            "id": "ais",
-            "label": "AIS observations",
-            "kind": "OBSERVATION",
-            "details": result["quality"],
-        },
-        {
-            "id": "ranking",
-            "label": "Investigative relevance",
-            "kind": "SCREENING RESULT",
-            "details": {
-                "weights": result["attribution"]["weights"],
-                "warning": "Not a probability of culpability.",
-            },
-        },
-        {
-            "id": "forecast",
-            "label": "Conditional forecast",
-            "kind": "MODEL OUTPUT",
-            "details": {
-                "method": forecast["method"],
-                "uncertainty": forecast["uncertainty"],
-            },
-        },
-        {
-            "id": "ecology",
-            "label": "Potential ecological exposure",
-            "kind": "MODEL OUTPUT",
-            "details": ecology,
-        },
-        {
-            "id": "response",
-            "label": "Response scenario foundation",
-            "kind": "RESPONSE SCENARIO",
-            "details": {
-                "status": "Create a planning scenario; effectiveness is not modeled"
-            },
-        },
-        {
-            "id": "proof",
-            "label": "Evidence & report",
-            "kind": "DERIVED MEASUREMENT",
-            "details": result["provenance"],
-        },
+        node("sar", "SAR acquisition", "OBSERVATION", "observe",
+             {"time": obs_time, "sensor": spill["sensor"]},
+             epistemic="OBSERVED", source=inputs.get("satellite", {}).get("name", spill["sensor"]),
+             time=obs_time, artifact=f"{assets}/satellite.png",
+             sha256=inputs.get("satellite", {}).get("sha256")),
+        node("ais", "AIS observations", "OBSERVATION", "observe", result["quality"],
+             epistemic="OBSERVED", source=inputs.get("ais", {}).get("name", "AIS input"),
+             uncertainty="AIS gaps can reflect receiver coverage, not vessel behaviour.",
+             sha256=inputs.get("ais", {}).get("sha256")),
+        node("preprocessing", "SAR preprocessing", "DERIVED MEASUREMENT", "measure",
+             {"method": spill["method"], "radiometry": spill["radiometry"],
+              "calibration": spill.get("calibration")},
+             epistemic="DERIVED", source="SAR preprocessing and dark-region segmentation (this run)", time=obs_time,
+             artifact=f"{assets}/processed.png"),
+        node("segmentation", "Dark-region segmentation", "DERIVED MEASUREMENT", "measure",
+             {"method": spill["method"], "radiometry": spill["radiometry"],
+              "area_km2": spill["area_km2"], "pixels": spill["candidate_pixels"]},
+             epistemic="DERIVED", source="SAR preprocessing and dark-region segmentation (this run)", time=obs_time,
+             uncertainty="Threshold screening; not a validated oil classifier.",
+             artifact=f"{assets}/mask.tif"),
+        node("candidate", "Oil candidate — classification pending", "SCREENING RESULT", "measure",
+             classification, epistemic="SCREENING", source="Classifier contract — no validated oil classifier installed",
+             uncertainty="Pollutant identity UNKNOWN; look-alikes not excluded."),
+        node("release", "Assumed release window", "ASSUMPTION", "reconstruct",
+             {"window": origin["release_window"], "basis": origin.get("release_window_basis")},
+             epistemic="ASSUMED", source="Analyst-supplied case configuration",
+             assumptions=["Release occurred inside this window"]),
+        node("origin", "Modeled origin region", "MODEL OUTPUT", "reconstruct",
+             {"radius90_km": origin["radius90_km"], "uncertainty": origin["uncertainty"],
+              "parameters": origin["parameters"]},
+             epistemic="MODELED", source=origin["method"], time=origin["release_window"][0],
+             assumptions=["Forcing inputs are representative", "Release window assumption"],
+             uncertainty=origin["uncertainty"], artifact=f"{assets}/origin_probability.geojson"),
+        node("ranking", "Investigative relevance ranking", "SCREENING RESULT", "attribute",
+             {"weights": result["attribution"]["weights"], "warning": "Not a probability of culpability."},
+             epistemic="SCREENING", source="AIS screening and investigative ranking (this run)",
+             uncertainty="Weighted screening score; not a probability of culpability.",
+             artifact=f"{assets}/ais_candidates.csv"),
+        node("truthloop", "TruthLoop challenge", "ADVERSARIAL TEST", "challenge",
+             {"top_score_margin": (result.get("attribution") or {}).get("robustness", {}).get("top_margin"),
+              "recorded_challenges": "See TruthLoop for the latest recorded challenge"},
+             epistemic="TESTED ON DEMAND", source="TruthLoop adversarial recomputation",
+             assumptions=["Recomputes this run's own ranking and hindcast only; no new evidence"],
+             uncertainty="Stability is a deterministic qualitative class, not statistical confidence."),
+        node("contradicting", "Contradicting evidence", "DERIVED MEASUREMENT", "challenge",
+             {"contradicting": vessels[0]["contradicting"] if vessels else []},
+             epistemic="DERIVED", source="AIS screening (this run)"),
+        node("forecast", "Conditional forecast", "MODEL OUTPUT", "consequence",
+             {"method": forecast["method"], "uncertainty": forecast["uncertainty"],
+              "horizons_h": [s["hours"] for s in forecast["steps"]]},
+             epistemic="PREDICTED", source=forecast["method"], time=obs_time,
+             assumptions=["Uniform forcing adapter", "No weathering or beaching"],
+             uncertainty=forecast["uncertainty"], artifact=f"{assets}/forecast.geojson"),
+        node("ecology", "Potential ecological exposure", "MODEL OUTPUT", "consequence", ecology,
+             epistemic="PREDICTED", source="Forecast envelope × loaded receptor layers",
+             uncertainty="Overlap is potential exposure, not confirmed damage."),
+        node("response", "Response planning scenarios", "RESPONSE SCENARIO", "consequence",
+             {"status": "Planning scenarios are created by the operator; effectiveness is not modeled"},
+             epistemic="ASSUMED", source="Operator-entered planning inputs",
+             assumptions=["Asset availability unverified", "Straight-line route"]),
+        node("next_observation", "Next-best observation", "RECOMMENDATION", "next",
+             {"basis": "Ranked re-observation targets derived from this run's outputs"},
+             epistemic="HEURISTIC", source="Next-best-observation heuristic",
+             uncertainty="Transparent weighted heuristic; not formal information gain."),
+        node("proof", "Evidence package", "EVIDENCE PACKAGE", "prove", result["provenance"],
+             epistemic="RECORDED", source="Forensic report + SHA-256 manifest",
+             time=result.get("created"), artifact=f"{assets}/evidence.zip",
+             sha256=result.get("analysis_hash")),
     ]
     pairs = [
         ("sar", "preprocessing"),
@@ -301,94 +307,27 @@ def derive(result):
         ("release", "origin"),
         ("origin", "ranking"),
         ("ais", "ranking"),
+        ("ranking", "truthloop"),
+        ("truthloop", "contradicting"),
         ("candidate", "forecast"),
         ("forecast", "ecology"),
         ("ecology", "response"),
+        ("contradicting", "next_observation"),
+        ("ecology", "next_observation"),
+        ("next_observation", "proof"),
         ("response", "proof"),
         ("ranking", "proof"),
     ]
-    for v in vessels[:6]:
+    for v in vessels[:3]:
         nodes.append(
-            {
-                "id": v["mmsi"],
-                "label": v["name"],
-                "kind": "SCREENING RESULT",
-                "mmsi": v["mmsi"],
-                "details": {
-                    "components": v["components"],
-                    "supporting": v["supporting"],
-                    "contradicting": v["contradicting"],
-                },
-            }
+            node(v["mmsi"], v["name"], "VESSEL EVIDENCE", "attribute",
+                 {"score": v["score"], "components": v["components"],
+                  "supporting": v["supporting"], "contradicting": v["contradicting"]},
+                 epistemic="SCREENING", source="AIS screening (this run)",
+                 uncertainty="Investigative relevance score; not a probability of culpability.",
+                 mmsi=v["mmsi"])
         )
-        pairs.extend([("ais", v["mmsi"]), (v["mmsi"], "ranking")])
-
-    # TruthLoop chain: lightweight, real-data nodes only -- no re-simulation here.
-    # Heavy adversarial recomputation lives in backend.truthloop and is fetched
-    # on demand via GET /api/v1/cases/{case_id}/truthloop, not embedded in every run.
-    top_margin = (result.get("attribution") or {}).get("robustness", {}).get("top_margin")
-    nearest_receptor = next(
-        (r for r in result.get("impact", {}).get("receptors", []) if r.get("first_overlap_h") is not None),
-        None,
-    )
-    nodes.append(
-        {
-            "id": "truthloop",
-            "label": "TruthLoop challenge",
-            "kind": "SCREENING RESULT",
-            "details": {
-                "epistemic_state": "Adversarial recomputation available on demand; not embedded in this run.",
-                "top_score_margin": top_margin,
-                "source": "GET /api/v1/cases/{case_id}/truthloop",
-                "assumptions": ["Uses this run's own AIS tracks and drift-hindcast functions only."],
-            },
-        }
-    )
-    nodes.append(
-        {
-            "id": "contradicting",
-            "label": "Contradicting evidence",
-            "kind": "DERIVED MEASUREMENT",
-            "details": {
-                "epistemic_state": "Real per-candidate contradicting evidence from this run's screening.",
-                "contradicting": vessels[0]["contradicting"] if vessels else [],
-                "source": "backend.ais.analyze",
-            },
-        }
-    )
-    nodes.append(
-        {
-            "id": "receptor",
-            "label": "Nearest potential exposure receptor",
-            "kind": "MODEL OUTPUT",
-            "details": nearest_receptor
-            or {
-                "epistemic_state": "UNAVAILABLE -- no receptor with sampled forecast overlap in this run.",
-            },
-        }
-    )
-    nodes.append(
-        {
-            "id": "next_observation",
-            "label": "Next-best observation",
-            "kind": "RESPONSE SCENARIO",
-            "details": {
-                "epistemic_state": "Ranked re-observation targets available via Next-Best-Observation; heuristic, not a probability.",
-                "source": "GET /api/v1/cases/{case_id}/next-observations",
-            },
-        }
-    )
-    pairs.extend(
-        [
-            ("ranking", "truthloop"),
-            ("truthloop", "contradicting"),
-            ("contradicting", "forecast"),
-            ("forecast", "receptor"),
-            ("receptor", "response"),
-            ("response", "next_observation"),
-            ("next_observation", "proof"),
-        ]
-    )
+        pairs.extend([("ais", v["mmsi"]), ("origin", v["mmsi"]), (v["mmsi"], "ranking")])
     return {
         "version": VERSION,
         "run_id": result["run_id"],

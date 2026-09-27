@@ -62,6 +62,21 @@ Open **http://127.0.0.1:8000**. This serves the built dashboard and API together
 - Saved cases and immutable run folders, input snapshots, algorithm hashes, hash-linked audit events, PDF report and verified evidence ZIP.
 - Responsive dark command-center layout, map layers, map time toggle, vessel inspection, timeline, evidence view, presentation mode.
 
+## Live data network
+
+OCEAN-EYE runs a background scheduler (every 30 s) that queries external sources on the
+backend only; the browser polls the local `/api/v1/live-data/status` control plane.
+
+| Source | Needs | Without it |
+| --- | --- | --- |
+| Sentinel-1 discovery (public CDSE STAC) | nothing | — |
+| Calibrated SIGMA0 imagery (Sentinel Hub Process API) | `CDSE_CLIENT_ID` / `CDSE_CLIENT_SECRET` | scenes recorded, imagery `AUTH_REQUIRED` |
+| Sentinel-1 acquisition plans (ESA KML) | nothing | next pass `UNKNOWN` |
+| Copernicus Marine currents | `copernicusmarine` toolbox + `COPERNICUSMARINE_SERVICE_*` | `NOT_INSTALLED` / `AUTH_REQUIRED` |
+
+Add an area to watch from Next Observation, TruthLoop or Copernicus Watch. Planned passes
+are labelled PLANNED — NOT GUARANTEED. See `.env.example` for configuration.
+
 ## Scientific scope
 
 This is a **functional demonstration and experimental screening prototype**, not a validated operational oil-attribution system. The installed SAR detector is a transparent image-processing baseline, not a trained neural model. Scores are calculated investigative priorities, **not probabilities of responsibility**. All synthetic investigations are visibly labelled.

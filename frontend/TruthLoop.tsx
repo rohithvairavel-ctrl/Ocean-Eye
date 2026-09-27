@@ -1,106 +1,76 @@
 import { useEffect, useState } from 'react';
-import { FlaskConical, ShieldAlert, ArrowRight } from 'lucide-react';
-import { api, post, Json } from './api';
+import { ArrowRight, Check, FlaskConical, Plus, RotateCcw } from 'lucide-react';
+import { Json, post, shortTime, time, sentence } from './api';
+import { Bar, PageHeader, Section, StateBlock, Status, Tag } from './ui';
 
-const STABILITY_COPY: Record<string, { badge: string; note: string }> = {
-  ROBUST: {
-    badge: 'green',
-    note: 'The top-ranked candidate survives every challenge that could be run against this run.',
-  },
-  MODERATE: {
-    badge: 'amber',
-    note: 'The top-ranked candidate survives every challenge, but the evidence margin is thin.',
-  },
-  FRAGILE: {
-    badge: 'red',
-    note: 'At least one challenge reverses the top-ranked candidate.',
-  },
-  INDETERMINATE: {
-    badge: 'purple',
-    note: 'This run does not have enough evidence to run a meaningful challenge.',
-  },
+const STABILITY_NOTE: Record<string, string> = {
+  ROBUST: 'The leading candidate survived every challenge that could be run, with a clear score margin.',
+  MODERATE: 'The leading candidate survived every challenge, but its margin over the next candidate is thin.',
+  FRAGILE: 'At least one challenge displaces the leading candidate. Treat the lead as provisional.',
+  INDETERMINATE: 'This run lacks the evidence needed to run a meaningful challenge.',
+  NOT_CHALLENGED: 'No challenge has been run for this analysis yet. Stability is unknown, not assumed.',
 };
 
-function RankingList({ ranking, highlight }: { ranking: Json[] | null; highlight?: string }) {
-  if (!ranking) return <p className="muted micro">Not available for this run.</p>;
+function Ranking({ rows, lead, title }: { rows: Json[] | null; lead?: string; title: string }) {
   return (
-    <ol className="truthloop-ranking">
-      {ranking.map((v, i) => (
-        <li key={v.mmsi} className={v.mmsi === highlight ? 'lead' : ''}>
-          <span>{i + 1}.</span> {v.name} <strong>{v.score}/100</strong>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function HypothesisCard({ h }: { h: Json }) {
-  const open = h.current_position?.toUpperCase().startsWith('OPEN');
-  return (
-    <article className={'truthloop-hypothesis' + (open ? '' : ' unevaluated')}>
-      <header>
-        <span className="badge">{h.id}</span>
-        <strong>{h.label}</strong>
-      </header>
-      {h.reference?.name && <p className="micro">{h.reference.name}{h.reference.mmsi ? ` · MMSI ${h.reference.mmsi}` : ''}</p>}
-      {h.reference?.distance_km !== undefined && (
-        <p className="micro">{h.reference.distance_km} km from candidate</p>
+    <div className="ranking">
+      <span className="ranking-title">{title}</span>
+      {!rows ? (
+        <p className="muted">Not available for this challenge.</p>
+      ) : (
+        <ol>
+          {rows.slice(0, 4).map((r) => (
+            <li key={r.mmsi} className={r.mmsi === lead ? 'is-lead' : ''}>
+              <span className="ranking-name">{r.name}</span>
+              <span className="mono">{r.score.toFixed(1)}</span>
+            </li>
+          ))}
+        </ol>
       )}
-      {h.supporting_evidence?.length > 0 && (
-        <div>
-          <span className="truthloop-tag support">Supporting</span>
-          <ul>{h.supporting_evidence.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
-        </div>
-      )}
-      {h.contradicting_evidence?.length > 0 && (
-        <div>
-          <span className="truthloop-tag contradict">Contradicting</span>
-          <ul>{h.contradicting_evidence.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
-        </div>
-      )}
-      {h.missing_evidence?.length > 0 && (
-        <div>
-          <span className="truthloop-tag missing">Missing</span>
-          <ul>{h.missing_evidence.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
-        </div>
-      )}
-      {h.assumptions?.length > 0 && <p className="micro">Assumes: {h.assumptions.join('; ')}</p>}
-      {h.uncertainties?.length > 0 && <p className="micro">Uncertainty: {h.uncertainties.join('; ')}</p>}
-      <p className="truthloop-position">{h.current_position}</p>
-    </article>
+    </div>
   );
 }
 
 export default function TruthLoop({
-  caseId,
-  runId,
-  onVessel,
+  a,
+  truth,
+  truthError,
+  setTruth,
+  live,
+  refreshLive,
+  navigate,
+  onOpenVessel,
 }: {
-  caseId: string;
-  runId: string;
-  onVessel: (mmsi: string) => void;
+  a: Json;
+  truth: Json | null;
+  truthError: string;
+  setTruth: (t: Json) => void;
+  live: Json | null;
+  refreshLive: () => void;
+  navigate: (p: string) => void;
+  onOpenVessel: (mmsi: string) => void;
 }) {
-  const [data, setData] = useState<Json | null>(null);
-  const [error, setError] = useState('');
-  const [challenging, setChallenging] = useState(false);
-  const [watchBusy, setWatchBusy] = useState<string | null>(null);
-  const [watchNotice, setWatchNotice] = useState('');
-
-  const load = () => api(`/cases/${caseId}/truthloop?run_id=${runId}`).then(setData).catch((e) => setError(e.message));
+  const [challenging, setChallenging] = useState(false),
+    [error, setError] = useState(''),
+    [hyp, setHyp] = useState('H1'),
+    [chosen, setChosen] = useState<string | null>(null),
+    [adding, setAdding] = useState<string | null>(null),
+    [added, setAdded] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    setData(null);
-    setError('');
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caseId, runId]);
+    if (truth?.challenged && !chosen) {
+      const first = truth.challenges.find((c: Json) => c.ranking_changed && c.id !== 'exclude_strongest_candidate');
+      setChosen((first || truth.challenges[0])?.id || null);
+    }
+  }, [truth?.sha256]);
 
   const challenge = async () => {
     setChallenging(true);
     setError('');
     try {
-      const result = await post(`/cases/${caseId}/truthloop/challenge?run_id=${runId}`);
-      setData(result);
+      const result = await post(`/cases/${a.case_id}/truthloop/challenge?run_id=${a.run_id}`);
+      setChosen(null);
+      setTruth(result);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -109,173 +79,277 @@ export default function TruthLoop({
   };
 
   const addToWatch = async (candidateId: string) => {
-    setWatchBusy(candidateId);
+    setAdding(candidateId);
+    setError('');
     try {
-      const result = await post(`/cases/${caseId}/next-observations/${candidateId}/watch?run_id=${runId}`);
-      setWatchNotice(`Added "${result.candidate.target_type}" to the Copernicus watch list.`);
+      const result = await post(`/cases/${a.case_id}/next-observations/${candidateId}/watch?run_id=${a.run_id}`);
+      setAdded((m) => ({ ...m, [candidateId]: result.already_watching ? 'Already watching' : 'Added to watch' }));
+      refreshLive();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setWatchBusy(null);
+      setAdding(null);
     }
   };
 
-  if (error) return <p className="limitation">{error}</p>;
-  if (!data) return <p className="muted">SYNCING TRUTHLOOP — recomputing from this run's own evidence…</p>;
+  const header = (
+    <PageHeader
+      eyebrow="TruthLoop · adversarial evidence & falsification"
+      title="How stable is our current explanation?"
+      question="TruthLoop tries to break the leading conclusion: it removes evidence, excludes the strongest candidate and varies assumptions, then recomputes the real ranking each time."
+      actions={
+        <button
+          className={`btn btn-primary btn-lg ${challenging ? 'is-busy' : ''}`}
+          onClick={challenge}
+          disabled={challenging || !a.vessels.length}
+        >
+          {truth?.challenged ? <RotateCcw size={16} /> : <FlaskConical size={16} />}
+          {challenging ? 'Challenging conclusion…' : truth?.challenged ? 'Challenge again' : 'Challenge this conclusion'}
+        </button>
+      }
+    />
+  );
 
-  const stability = STABILITY_COPY[data.stability.state] || STABILITY_COPY.INDETERMINATE;
-  const leadMmsi = data.hypotheses?.[0]?.reference?.mmsi;
+  if (truthError && !truth)
+    return (
+      <>
+        {header}
+        <StateBlock kind="error" title="TruthLoop could not load" action={<button className="btn btn-quiet" onClick={() => location.reload()}>Retry</button>}>
+          {truthError} The investigation itself is unaffected.
+        </StateBlock>
+      </>
+    );
+  if (!truth)
+    return (
+      <>
+        {header}
+        <StateBlock kind="loading" title="Assembling competing hypotheses">Reading this run's evidence…</StateBlock>
+      </>
+    );
+
+  const lead = truth.baseline_ranking?.[0];
+  const hypothesis = truth.hypotheses.find((h: Json) => h.id === hyp) || truth.hypotheses[0];
+  const selected = truth.challenges.find((c: Json) => c.id === chosen);
+  const state = truth.stability.state;
+  const watched = new Set((live?.watch_areas || []).map((w: Json) => w.origin_ref).filter(Boolean));
 
   return (
-    <div className="truthloop">
-      <div className="truthloop-header">
-        <div>
-          <h2>
-            <FlaskConical size={18} /> OCEAN-EYE TRUTHLOOP
-          </h2>
-          <p className="micro">ADVERSARIAL EVIDENCE &amp; FALSIFICATION ENGINE — {data.method}</p>
+    <>
+      {header}
+      {error && <StateBlock kind="error" compact title="Challenge failed">{error} Nothing was recorded; retrying is safe.</StateBlock>}
+
+      <div className={`verdict tone-band-${state.toLowerCase()} ${challenging ? 'is-busy' : ''}`} aria-live="polite">
+        <div className="verdict-lead">
+          <span className="eyebrow">Leading explanation · H1</span>
+          <strong>{lead ? lead.name : 'No AIS-tracked vessel'}</strong>
+          {lead && <span className="muted">Investigative relevance {lead.score}/100 — not a probability of culpability</span>}
         </div>
-        <button className="primary" disabled={challenging} onClick={challenge}>
-          <ShieldAlert size={15} /> {challenging ? 'Challenging…' : 'Challenge This Conclusion'}
-        </button>
+        <div className="verdict-state">
+          <span className="eyebrow">Conclusion stability</span>
+          {challenging ? <Status state="RUNNING" text="Recomputing challenges" /> : <Status state={state} />}
+          <p>{STABILITY_NOTE[state]}</p>
+          {truth.challenged && (
+            <span className="fine">
+              Challenged {time(truth.challenged_at)} · {truth.stability.challenges_run} of {truth.stability.challenges_available} challenges run ·
+              record <span className="mono">{truth.sha256.slice(0, 12)}</span>
+            </span>
+          )}
+        </div>
+        <div className="verdict-note">Deterministic qualitative class from explicit rules — not statistical confidence.</div>
       </div>
-      {watchNotice && <div className="banner">{watchNotice}</div>}
 
-      <div className="truthloop-layout">
-        <section className="intelligence-block truthloop-hypotheses">
-          <h3>Competing hypotheses</h3>
-          {data.hypotheses.map((h: Json) => (
-            <HypothesisCard key={h.id} h={h} />
-          ))}
-        </section>
-
-        <section className="intelligence-block truthloop-center">
-          <h3>Conclusion stability</h3>
-          <p>
-            <span className={'badge ' + stability.badge}>CONCLUSION STABILITY — {data.stability.state}</span>
-          </p>
-          <p className="micro">{stability.note}</p>
-          <ul className="truthloop-reasons">
-            {data.stability.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}
-          </ul>
-
-          <h3>Challenges run</h3>
-          <div className="truthloop-challenges">
-            {data.challenges.map((c: Json) => (
-              <div key={c.id} className={'truthloop-challenge' + (c.ranking_changed ? ' reversed' : '')}>
-                <header>
-                  <strong>{c.label}</strong>
-                  {c.available ? (
-                    <span className={'badge ' + (c.ranking_changed ? 'red' : 'green')}>
-                      {c.ranking_changed ? 'RANKING REVERSES' : 'UNCHANGED'}
+      <div className="truth-grid">
+        <Section title="Competing hypotheses" className="truth-hypotheses">
+          <ul className="hyp-list" role="listbox" aria-label="Competing hypotheses">
+            {truth.hypotheses.map((h: Json) => (
+              <li key={h.id}>
+                <button
+                  role="option"
+                  aria-selected={h.id === hyp}
+                  className={h.id === hyp ? 'on' : ''}
+                  onClick={() => setHyp(h.id)}
+                >
+                  <span className="hyp-id">{h.id}</span>
+                  <span className="hyp-text">
+                    <strong>{h.label}</strong>
+                    {h.reference?.name && <span className="muted">{h.reference.name}</span>}
+                    <span className={`hyp-position ${h.current_position.startsWith('NOT') ? 'dim' : ''}`}>
+                      {h.current_position.split('--')[0].trim().toLowerCase().replace(/^\w/, (c: string) => c.toUpperCase())}
                     </span>
-                  ) : (
-                    <span className="badge">NOT RUN</span>
-                  )}
-                </header>
-                <p className="micro">{c.description}</p>
-                {c.available ? (
-                  <div className="truthloop-compare">
-                    <div>
-                      <span className="micro">BASELINE</span>
-                      <RankingList ranking={c.baseline_ranking} highlight={leadMmsi} />
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Section>
+
+        <Section
+          title="Challenges"
+          note={truth.challenged ? 'Select a challenge to compare the baseline ranking with the recomputed one.' : undefined}
+          className="truth-challenges"
+        >
+          {!truth.challenged ? (
+            <StateBlock kind="waiting" title="The conclusion has not been challenged">
+              Eight challenges are ready: remove proximity, AIS-gap, speed-change and course-change evidence; exclude the strongest
+              candidate; expand origin uncertainty; shift the release time; vary forcing within its stated uncertainty.
+            </StateBlock>
+          ) : (
+            <>
+              <ul className="challenge-list">
+                {truth.challenges.map((c: Json) => (
+                  <li key={c.id}>
+                    <button className={c.id === chosen ? 'on' : ''} onClick={() => setChosen(c.id)}>
+                      <span>{c.label}</span>
+                      {!c.available ? (
+                        <Tag>Not run</Tag>
+                      ) : c.id === 'exclude_strongest_candidate' ? (
+                        <Tag tone="neutral">Counterfactual</Tag>
+                      ) : c.ranking_changed ? (
+                        <Tag tone="hazard">Lead changes</Tag>
+                      ) : (
+                        <Tag tone="ok">Lead holds</Tag>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {selected && (
+                <div className="compare enter" key={selected.id}>
+                  <p className="compare-desc">{selected.description}</p>
+                  {selected.available ? (
+                    <div className="compare-cols">
+                      <Ranking rows={selected.baseline_ranking} lead={lead?.mmsi} title="Baseline" />
+                      <ArrowRight size={18} className="compare-arrow" aria-hidden />
+                      <Ranking rows={selected.after_ranking} lead={lead?.mmsi} title="After challenge" />
                     </div>
-                    <ArrowRight size={16} />
-                    <div>
-                      <span className="micro">AFTER CHALLENGE</span>
-                      <RankingList ranking={c.after_ranking} highlight={leadMmsi} />
-                    </div>
-                  </div>
+                  ) : null}
+                  <p className={`compare-explain ${selected.ranking_changed && selected.id !== 'exclude_strongest_candidate' ? 'reversal' : ''}`}>
+                    {selected.explanation}
+                  </p>
+                  <details>
+                    <summary>Method</summary>
+                    <p className="fine">{selected.method}</p>
+                  </details>
+                </div>
+              )}
+              <ul className="reasons">
+                {truth.stability.reasons.map((r: string, i: number) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </Section>
+
+        <Section title={`Evidence · ${hypothesis.id}`} className="truth-evidence">
+          <div className="evidence-lists">
+            {[
+              ['Supporting', hypothesis.supporting_evidence, 'ok'],
+              ['Contradicting', hypothesis.contradicting_evidence, 'hazard'],
+              ['Missing', hypothesis.missing_evidence, 'warn'],
+            ].map(([name, items, tone]: any) => (
+              <div key={name}>
+                <h3 className={`tone-text-${tone}`}>{name}</h3>
+                {items.length ? (
+                  <ul>
+                    {items.map((s: string, i: number) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ul>
                 ) : (
-                  <p className="micro">{c.explanation}</p>
+                  <p className="muted">None recorded in this run.</p>
                 )}
-                <p className="truthloop-explain">{c.explanation}</p>
-                <details>
-                  <summary>Method</summary>
-                  <p className="micro">{c.method}</p>
-                </details>
               </div>
             ))}
+            {hypothesis.assumptions.length > 0 && (
+              <p className="fine">Assumes: {hypothesis.assumptions.join('; ')}.</p>
+            )}
+            {hypothesis.uncertainties.length > 0 && <p className="fine">Uncertainty: {hypothesis.uncertainties.join('; ')}.</p>}
+            {hypothesis.reference?.mmsi && (
+              <button className="btn btn-quiet btn-sm" onClick={() => onOpenVessel(hypothesis.reference.mmsi)}>
+                Inspect evidence
+              </button>
+            )}
           </div>
-        </section>
-
-        <section className="intelligence-block truthloop-fragility">
-          <h3>Evidence fragility</h3>
-          <p className="micro">
-            Most dependent on: <strong>{data.most_dependent_factor || 'n/a'}</strong>
-          </p>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Factor</th>
-                  <th>Influence</th>
-                  <th>Contribution</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.fragility.map((f: Json) => (
-                  <tr key={f.factor}>
-                    <td>{f.factor}</td>
-                    <td>
-                      <span className={'badge ' + (f.influence === 'HIGH' ? 'red' : f.influence === 'MEDIUM' ? 'amber' : '')}>
-                        {f.influence}
-                      </span>
-                    </td>
-                    <td>{f.contribution}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {leadMmsi && (
-            <button className="text-button" onClick={() => onVessel(leadMmsi)}>
-              Inspect leading candidate <ArrowRight size={12} />
-            </button>
-          )}
-        </section>
+        </Section>
       </div>
 
-      <section className="intelligence-block truthloop-next">
-        <h3>Evidence needed next</h3>
-        <p className="micro">What would most help distinguish the leading competing hypotheses.</p>
-        <div className="table-scroll">
+      <Section
+        title="Evidence fragility"
+        note={
+          truth.most_dependent_factor
+            ? `The leading candidate's score depends most on ${truth.most_dependent_factor.toLowerCase()}.`
+            : undefined
+        }
+      >
+        <div className="fragility">
+          {truth.fragility.map((f: Json) => (
+            <div key={f.factor} className="fragility-row">
+              <span className="fragility-name">{f.factor}</span>
+              <Bar value={f.share_of_score} tone={f.influence === 'HIGH' ? 'hazard' : f.influence === 'MEDIUM' ? 'warn' : 'neutral'} />
+              <span className="mono">{f.share_of_score}%</span>
+              <Tag tone={f.influence === 'HIGH' ? 'hazard' : f.influence === 'MEDIUM' ? 'warn' : 'neutral'}>{f.influence.toLowerCase()} influence</Tag>
+            </div>
+          ))}
+          <p className="fine">Share of the leading candidate's relevance score contributed by each factor (value × weight). Derived, not estimated.</p>
+        </div>
+      </Section>
+
+      <Section
+        title="Evidence needed to distinguish the hypotheses"
+        note="Each gap maps to a Next-Best-Observation target. Adding it to Copernicus Watch closes the loop: new SAR → auto-analyze → updated investigation."
+        actions={<button className="btn btn-quiet btn-sm" onClick={() => navigate('Next Observation')}>Open Next Observation</button>}
+      >
+        <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Evidence needed</th>
                 <th>Why</th>
                 <th>Distinguishes</th>
-                <th>Source</th>
-                <th></th>
+                <th>AOI</th>
+                <th>Source · window</th>
+                <th aria-label="Action" />
               </tr>
             </thead>
             <tbody>
-              {data.discriminating_evidence.map((e: Json) => (
-                <tr key={e.candidate_id}>
-                  <td>
-                    <strong>{e.evidence_needed}</strong>
-                    <br />
-                    <small className="muted">{e.uncertainty_it_may_reduce}</small>
-                  </td>
-                  <td style={{ maxWidth: 280 }}>{e.why}</td>
-                  <td>{e.distinguishes_hypotheses.join(', ') || '—'}</td>
-                  <td>{e.recommended_data_source}</td>
-                  <td>
-                    <button
-                      className="secondary"
-                      disabled={watchBusy === e.candidate_id}
-                      onClick={() => addToWatch(e.candidate_id)}
-                    >
-                      {watchBusy === e.candidate_id ? 'Adding…' : 'Add to Copernicus Watch'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {truth.discriminating_evidence.map((e: Json) => {
+                const ref = `nbo:${a.case_id}:${e.candidate_id}`;
+                const already = watched.has(ref) || added[e.candidate_id];
+                return (
+                  <tr key={e.candidate_id}>
+                    <td>
+                      <strong>{sentence(e.evidence_needed)}</strong>
+                      <span className="cell-note">{e.uncertainty_it_may_reduce}</span>
+                    </td>
+                    <td className="wide">{e.why}</td>
+                    <td>{e.distinguishes_hypotheses.join(' · ') || '—'}</td>
+                    <td className="mono small">
+                      {e.aoi.center[1].toFixed(2)}, {e.aoi.center[0].toFixed(2)}
+                      <span className="cell-note">r {e.aoi.radius_km} km</span>
+                    </td>
+                    <td className="small">
+                      {e.recommended_data_source}
+                      <span className="cell-note">next acquisition after {shortTime(a.observation_time)}</span>
+                    </td>
+                    <td>
+                      {already ? (
+                        <span className="done">
+                          <Check size={13} /> {added[e.candidate_id] || 'Watching'}
+                        </span>
+                      ) : (
+                        <button className="btn btn-quiet btn-sm" disabled={adding === e.candidate_id} onClick={() => addToWatch(e.candidate_id)}>
+                          <Plus size={13} /> {adding === e.candidate_id ? 'Adding…' : 'Add to watch'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-      </section>
-    </div>
+      </Section>
+    </>
   );
 }

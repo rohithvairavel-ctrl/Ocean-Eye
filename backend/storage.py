@@ -52,7 +52,26 @@ def init():
             UNIQUE(watch_id, stac_id)
         );
         CREATE INDEX IF NOT EXISTS observations_watch ON observations(watch_id);
+        CREATE TABLE IF NOT EXISTS truthloop_runs(
+            run_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, created TEXT NOT NULL,
+            payload TEXT NOT NULL, hash TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS provider_state(
+            provider TEXT PRIMARY KEY, updated TEXT NOT NULL, payload TEXT NOT NULL
+        );
         """
+        )
+        _ensure_columns(
+            db,
+            "watch_areas",
+            {
+                "sync_started": "TEXT",
+                "last_success": "TEXT",
+                "last_error": "TEXT",
+                "last_new_at": "TEXT",
+                "last_scene_count": "INTEGER",
+                "origin_ref": "TEXT",
+            },
         )
 
     # Archive only the known legacy integration fixture; preserve all runs and evidence.
@@ -76,6 +95,32 @@ def init():
             case_id,
             "legacy_fixture_archived",
             {"reason": "Operational inventory cleanup; evidence retained"},
+        )
+
+
+def _ensure_columns(db, table, columns):
+    """Additive, idempotent schema migration for databases created by older builds."""
+    existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+    for name, kind in columns.items():
+        if name not in existing:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+
+
+def get_provider_state(provider):
+    with connect() as db:
+        row = db.execute(
+            "SELECT updated,payload FROM provider_state WHERE provider=?", (provider,)
+        ).fetchone()
+    if not row:
+        return None
+    return {"updated": row["updated"], **json.loads(row["payload"])}
+
+
+def set_provider_state(provider, payload):
+    with connect() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO provider_state(provider,updated,payload) VALUES(?,?,?)",
+            (provider, now(), canonical(payload)),
         )
 
 

@@ -17,3 +17,6 @@ tmp/
 .env
 .env.*
 !.env.example
+
+# Runtime caches written by the live-data providers
+datasets/acquisition_plans/

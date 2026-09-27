@@ -1,509 +1,164 @@
-import { useEffect, useState, ReactNode } from 'react';
-import { ChevronRight, ShieldAlert } from 'lucide-react';
-import { api, post, Json, time, coordinate } from './api';
+import { useState } from 'react';
+import { Json, coordinate, post, shortTime, time } from './api';
 import MaritimeMap from './MaritimeMap';
-import { NextBestObservation } from './Copernicus';
+import { Metric, PageHeader, Section, StateBlock, Status, Tag } from './ui';
 
-export function Workflow({
-  navigate,
-  a,
-  page,
-}: {
-  navigate: (s: string) => void;
-  a?: Json;
-  page?: string;
-}) {
-  // Real, deterministic stage state -- never fabricated. COMPLETE means the
-  // underlying result already exists in this run; WAITING means the stage is
-  // available but requires an explicit analyst action (challenge, scenario,
-  // watch) that has not necessarily been taken; UNAVAILABLE means this run's
-  // own data structurally cannot support the stage (e.g. no AIS tracks).
-  const vesselCount = a?.vessels?.length ?? 0;
-  const stages: [string, string, string][] = [
-    ['OBSERVE', 'Satellite Analysis', a ? 'COMPLETE' : 'WAITING'],
-    ['VERIFY', 'Verification', a ? 'COMPLETE' : 'WAITING'],
-    ['RECONSTRUCT', 'Drift & Origin', a?.origin ? 'COMPLETE' : 'WAITING'],
-    ['INVESTIGATE', 'Vessel Ranking', !a ? 'WAITING' : vesselCount > 0 ? 'COMPLETE' : 'UNAVAILABLE'],
-    ['CHALLENGE', 'TruthLoop', !a ? 'WAITING' : vesselCount > 0 ? 'WAITING' : 'UNAVAILABLE'],
-    ['FORECAST', 'Drift & Origin', a?.forecast ? 'COMPLETE' : 'WAITING'],
-    ['PROTECT', 'Ecological Exposure', a?.impact ? 'COMPLETE' : 'WAITING'],
-    ['RESPOND', 'Response Twin', 'WAITING'],
-    ['RE-OBSERVE', 'Copernicus Watch', 'WAITING'],
-    ['PROVE', 'Evidence Graph', a?.evidence ? 'COMPLETE' : 'WAITING'],
-  ].map(([label, target, state]) => [label, target, page === target ? 'ACTIVE' : state]);
-  return (
-    <nav className="mission-workflow" aria-label="Investigation journey">
-      {stages.map(([label, target, state], i) => (
-        <button key={label} className={'stage-' + state.toLowerCase()} onClick={() => navigate(target)} title={state}>
-          <small>{String(i + 1).padStart(2, '0')}</small>
-          {label}
-          <span className={'stage-dot ' + state.toLowerCase()} />
-        </button>
-      ))}
-    </nav>
+/* ------------------------------------------------------------------ */
+/* Alerts                                                             */
+/* ------------------------------------------------------------------ */
+
+export function Alerts({ a, data, error, navigate }: { a: Json; data: Json | null; error: string; navigate: (p: string) => void }) {
+  const header = (
+    <PageHeader
+      eyebrow="Command"
+      title="Alerts"
+      question="What needs a decision — and on what evidence?"
+    >
+      <p className="notice">Rule-based findings anchored to the observation at {time(a.observation_time)}. They are not live warnings; external notifications are not configured.</p>
+    </PageHeader>
   );
-}
-export function InvestigativePriorities({
-  a,
-  navigate,
-  copernicusConfigured,
-}: {
-  a: Json;
-  navigate: (s: string) => void;
-  copernicusConfigured?: boolean;
-}) {
-  const [truthloop, setTruthloop] = useState<Json | null>(null);
-  const [nextObs, setNextObs] = useState<Json | null>(null);
-  useEffect(() => {
-    setTruthloop(null);
-    setNextObs(null);
-    api(`/cases/${a.case_id}/truthloop?run_id=${a.run_id}`).then(setTruthloop).catch(() => setTruthloop(null));
-    api(`/cases/${a.case_id}/next-observations?run_id=${a.run_id}`).then(setNextObs).catch(() => setNextObs(null));
-  }, [a.case_id, a.run_id]);
-
-  const lead = a.vessels?.[0];
-  const exposure = (a.impact?.receptors || []).find((r: Json) => r.first_overlap_h !== null);
-  const stabilityBadge: Record<string, string> = {
-    ROBUST: 'green', MODERATE: 'amber', FRAGILE: 'red', INDETERMINATE: 'purple',
-  };
-  const topCandidate = nextObs?.candidates?.[0];
-
-  const rows: [string, ReactNode, () => void][] = [
-    [
-      'TOP INVESTIGATIVE LEAD',
-      lead ? <>{lead.name} <span className="muted">· {lead.score}/100</span></> : <span className="muted">No AIS-tracked vessels</span>,
-      () => navigate('Vessel Ranking'),
-    ],
-    [
-      'CONCLUSION STABILITY',
-      truthloop ? (
-        <span className={'badge ' + (stabilityBadge[truthloop.stability.state] || '')}>{truthloop.stability.state}</span>
-      ) : (
-        <span className="muted">Computing…</span>
-      ),
-      () => navigate('TruthLoop'),
-    ],
-    [
-      'NEXT POTENTIAL EXPOSURE',
-      exposure ? <>{exposure.name} <span className="muted">· +{exposure.first_overlap_h}h</span></> : <span className="muted">No sampled overlap within forecast</span>,
-      () => navigate('Ecological Exposure'),
-    ],
-    [
-      'NEXT-BEST OBSERVATION',
-      topCandidate ? <>{topCandidate.target_type} <span className="muted">· {topCandidate.score}/100</span></> : <span className="muted">Computing…</span>,
-      () => navigate('TruthLoop'),
-    ],
-    [
-      'COPERNICUS STATUS',
-      <span className={'badge ' + (copernicusConfigured ? 'green' : 'amber')}>{copernicusConfigured ? 'LIVE' : 'DEMO'}</span>,
-      () => navigate('Copernicus Watch'),
-    ],
-    [
-      'RESPONSE WINDOW',
-      exposure ? <>~{exposure.first_overlap_h}h to modeled onset</> : <span className="muted">No modeled onset within forecast</span>,
-      () => navigate('Response Twin'),
-    ],
-  ];
-
+  if (error) return <>{header}<StateBlock kind="error" title="Alerts unavailable">{error}</StateBlock></>;
+  if (!data) return <>{header}<StateBlock kind="loading" title="Evaluating alert rules" /></>;
+  const tone: Record<string, any> = { CRITICAL: 'hazard', HIGH: 'hazard', WATCH: 'warn', INFORMATIONAL: 'neutral' };
   return (
-    <section className="panel">
-      <div className="panel-heading">
-        <h2>
-          <ShieldAlert size={16} />
-          Investigative priorities
-        </h2>
-      </div>
-      <ul className="priority-list">
-        {rows.map(([label, value, go]) => (
-          <li key={label}>
-            <button onClick={go}>
-              <span className="micro">{label}</span>
-              <span>{value}</span>
-              <ChevronRight size={13} />
-            </button>
+    <>
+      {header}
+      <ol className="alert-list">
+        {data.alerts.map((e: Json) => (
+          <li key={e.id} className={`alert-item sev-${e.severity.toLowerCase()}`}>
+            <div className="alert-sev">
+              <Tag tone={tone[e.severity]}>{e.severity.toLowerCase()}</Tag>
+            </div>
+            <div className="alert-body">
+              <h3>{e.title}</h3>
+              <p>{e.why}</p>
+              <p className="alert-next">
+                <b>Next action</b> {e.next_action}
+              </p>
+              <span className="fine">
+                {shortTime(e.event_time)} · {coordinate(e.location)} · rule {e.rule_id}
+              </span>
+              <details>
+                <summary>Data, assumptions and uncertainty</summary>
+                <pre>{JSON.stringify({ data_used: e.data_used, assumptions: e.assumptions, uncertainty: e.uncertainty }, null, 2)}</pre>
+              </details>
+            </div>
           </li>
         ))}
-      </ul>
-    </section>
+      </ol>
+      <p className="fine">
+        Re-observation targets live in <button className="link" onClick={() => navigate('Next Observation')}>Next Observation</button>.
+      </p>
+    </>
   );
 }
 
-function Detail({ value, label = 'Evidence and provenance' }: { value: any; label?: string }) {
-  return (
-    <details>
-      <summary>{label}</summary>
-      <pre>{JSON.stringify(value, null, 2)}</pre>
-    </details>
+/* ------------------------------------------------------------------ */
+/* Ecological exposure                                                */
+/* ------------------------------------------------------------------ */
+
+export function Ecology({ a, data, error, geography }: { a: Json; data: Json | null; error: string; geography: Json | null }) {
+  const header = (
+    <PageHeader
+      eyebrow="Protect"
+      title="Ecological exposure"
+      question="What may be exposed, and when would the forecast envelope first reach it?"
+    >
+      <p className="notice">Potential ecological exposure = overlap between the conditional forecast envelope and loaded receptor layers. It is not confirmed ecological damage and says nothing about species impact.</p>
+    </PageHeader>
   );
-}
-export function Dossier({ a, v }: { a: Json; v: Json }) {
+  if (error) return <>{header}<StateBlock kind="error" title="Exposure screening unavailable">{error}</StateBlock></>;
+  if (!data) return <>{header}<StateBlock kind="loading" title="Intersecting forecast with receptor layers" /></>;
+  const receptors: Json[] = data.ecology.receptors;
+  const horizon = Math.max(...a.forecast.steps.map((s: Json) => s.hours), 48);
+  const exposed = receptors.filter((r) => r.first_overlap_h !== null);
   return (
-    <section className="intelligence-block">
-      <h3>Vessel investigation dossier</h3>
-      <p>INVESTIGATIVE RELEVANCE SCORE · {v.score}/100</p>
-      <p className="limitation">Not a probability of culpability.</p>
-      <p>
-        {v.name} · MMSI {v.mmsi} · IMO {v.imo || 'Unavailable'} · AIS type code{' '}
-        {v.vessel_type || 'Unavailable'}
-      </p>
-      <p>
-        Nearest observed approach: {v.nearest_km} km · Ownership, history and violations:
-        unavailable.
-      </p>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Factor</th>
-              <th>Value / 100</th>
-              <th>Weight</th>
-              <th>Contribution</th>
-            </tr>
-          </thead>
-          <tbody>
-            {v.components.map((c: Json) => (
-              <tr key={c.name}>
-                <td>{c.name}</td>
-                <td>{c.value}</td>
-                <td>{(c.weight * 100).toFixed(0)}%</td>
-                <td>{c.contribution}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <Detail label="Supporting evidence" value={v.supporting} />
-      <Detail label="Contradicting evidence" value={v.contradicting} />
-      <Detail label="AIS reporting gaps and uncertainty" value={v.gaps} />
-      <details>
-        <summary>Observed speed / course history and coordinates</summary>
-        <div className="history-table">
-          <table>
-            <thead>
-              <tr>
-                <th>UTC</th>
-                <th>Position</th>
-                <th>Knots</th>
-                <th>Course °</th>
-              </tr>
-            </thead>
-            <tbody>
-              {v.track.map((p: Json, i: number) => (
-                <tr key={i}>
-                  <td>{time(p.time)}</td>
-                  <td>{coordinate(p.coordinates)}</td>
-                  <td>{p.sog ?? 'Unavailable'}</td>
-                  <td>{p.cog ?? 'Unavailable'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
-      <Detail
-        label="AIS input provenance"
-        value={a.provenance.inputs.filter((p: Json) => p.role === 'ais')}
-      />
-      <a
-        className="secondary"
-        href={`/api/v1/cases/${a.case_id}/vessels/${v.mmsi}/dossier`}
-        target="_blank"
-        rel="noreferrer"
-      >
-        Open dossier JSON
-      </a>
-    </section>
-  );
-}
-export function GlobalIncidents({
-  geography,
-  select,
-}: {
-  geography: Json | null;
-  select: (id: string) => void;
-}) {
-  const [items, setItems] = useState<Json[]>([]),
-    [error, setError] = useState('');
-  useEffect(() => {
-    api<Json[]>('/incidents')
-      .then(setItems)
-      .catch((e) => setError(e.message));
-  }, []);
-  return (
-    <section className="panel padded">
-      <h2>Saved investigations · global incident view</h2>
-      <p>
-        {items.length} saved case{items.length === 1 ? '' : 's'}. Local case inventory; live global
-        monitoring is not connected.
-      </p>
-      {error && <p role="alert">{error}</p>}
-      <MaritimeMap
-        analysis={null}
-        geography={geography}
-        selected={null}
-        onSelect={() => {}}
-        focus={null}
-        global
-        incidents={items}
-        onCase={select}
-      />
-      <div className="incident-list">
-        {items.map((c) => (
-          <button key={c.id} onClick={() => select(c.id)}>
-            <strong>{c.name}</strong>
-            <span>
-              {c.status} · {c.source_type}
-            </span>
-            <small>
-              {time(c.observation_time)} ·{' '}
-              {c.coordinates
-                ? coordinate(c.coordinates)
-                : 'Location unavailable until analysis completes'}
-            </small>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-export function Intelligence({
-  a,
-  page,
-  geography,
-  onVessel,
-}: {
-  a: Json;
-  page: string;
-  geography: Json | null;
-  onVessel: (id: string) => void;
-}) {
-  const [data, setData] = useState<Json | null>(null),
-    [error, setError] = useState(''),
-    [scenarios, setScenarios] = useState<Json[]>([]),
-    [node, setNode] = useState<string>('sar'),
-    [watchNotice, setWatchNotice] = useState('');
-  const refresh = () =>
-    Promise.all([
-      api(`/cases/${a.case_id}/intelligence`),
-      api<Json[]>(`/cases/${a.case_id}/scenarios?run_id=${a.run_id}`),
-    ]).then(([d, s]) => {
-      setData(d);
-      setScenarios(s);
-    });
-  useEffect(() => {
-    let active = true;
-    setData(null);
-    setError('');
-    Promise.all([
-      api(`/cases/${a.case_id}/intelligence`),
-      api<Json[]>(`/cases/${a.case_id}/scenarios?run_id=${a.run_id}`),
-    ])
-      .then(([d, s]) => {
-        if (active) {
-          setData(d);
-          setScenarios(s);
-        }
-      })
-      .catch((e) => {
-        if (active) setError(e.message);
-      });
-    return () => {
-      active = false;
-    };
-  }, [a.run_id, page]);
-  if (error)
-    return (
-      <section className="panel padded" role="alert">
-        {error}
-        <button
-          onClick={() => {
-            setError('');
-            refresh().catch((e) => setError(e.message));
-          }}
-        >
-          Retry
-        </button>
-      </section>
-    );
-  if (!data) return <section className="panel padded">Loading run-bound intelligence…</section>;
-  if (page === 'Response Twin')
-    return <ResponsePlanner a={a} geography={geography} scenarios={scenarios} changed={refresh} />;
-  if (page === 'Verification')
-    return (
-      <section className="panel padded">
-        <h2>OIL CANDIDATE — CLASSIFICATION PENDING</h2>
-        <p>
-          Pollutant identity: UNKNOWN. Dark-region segmentation is a screening measurement, not a
-          validated oil classifier.
-        </p>
-        <Detail
-          value={data.classification}
-          label="Classifier integration contract / availability"
-        />
-        <h3>Supported incident evidence requirements</h3>
-        {data.incident.types.map((t: Json) => (
-          <Detail key={t.id || t.type} label={t.label} value={t} />
-        ))}
-      </section>
-    );
-  if (page === 'Ecological Exposure')
-    return (
-      <section className="panel padded">
-        <h2>Ecological exposure intelligence</h2>
-        <p>{data.ecology.level} · Forecast overlap is not confirmed ecological damage.</p>
-        <p className="limitation">{data.ecology.species_assessment}</p>
-        <p>{data.ecology.biodiversity_coverage}</p>
-        {!data.ecology.receptors.length && (
-          <p>
-            No receptor layers loaded in this investigation. Import documented geographic layers and
-            rerun.
-          </p>
-        )}
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Receptor / category</th>
-                <th>First overlapping sample</th>
-                <th>Dataset / version</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.ecology.receptors.map((r: Json, i: number) => (
-                <tr key={i}>
-                  <td>
-                    {r.name}
-                    <small>{r.kind}</small>
-                  </td>
-                  <td>
-                    {r.first_overlap_time ? time(r.first_overlap_time) : 'No sampled overlap'}
-                  </td>
-                  <td>
-                    {r.source} / {r.version}
-                    <small>{r.source_type}</small>
-                  </td>
-                  <td>
-                    {r.status}
-                    <small>{r.uncertainty}</small>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p>{data.ecology.limitations}</p>
-      </section>
-    );
-  if (page === 'Evidence Graph') {
-    const graph = data.evidence;
-    const current = graph.nodes.find((n: Json) => n.id === node) || graph.nodes[0];
-    return (
-      <section className="panel padded">
-        <h2>Interactive forensic reasoning</h2>
-        <p>Select a node to inspect its evidence, incoming dependencies and provenance.</p>
-        <div className="reasoning-grid">
-          {graph.nodes.map((n: Json) => (
-            <button
-              key={n.id}
-              className={current.id === n.id ? 'chosen' : ''}
-              onClick={() => setNode(n.id)}
-            >
-              <small>{n.kind}</small>
-              <strong>{n.label}</strong>
-            </button>
-          ))}
-        </div>
-        <section className="intelligence-block">
-          <h3>{current.label}</h3>
-          <p>
-            {current.kind} · Run {a.run_id}
-          </p>
-          <p>
-            Informed by:{' '}
-            {graph.edges
-              .filter((e: Json) => e.target === current.id)
-              .map((e: Json) => graph.nodes.find((n: Json) => n.id === e.source)?.label || e.source)
-              .join(' → ') || 'Source observation'}
-          </p>
-          <p>
-            Informs:{' '}
-            {graph.edges
-              .filter((e: Json) => e.source === current.id)
-              .map((e: Json) => graph.nodes.find((n: Json) => n.id === e.target)?.label || e.target)
-              .join(' → ') || 'Terminal evidence'}
-          </p>
-          {current.mmsi && (
-            <button onClick={() => onVessel(current.mmsi)}>Open vessel dossier</button>
+    <>
+      {header}
+      <div className="split">
+        <div>
+          <div className="facts">
+            <Metric label="Receptors screened" value={receptors.length} />
+            <Metric label="Potential exposure" value={exposed.length} tone={exposed.length ? 'warn' : undefined} />
+            <Metric label="Earliest onset" value={exposed.length ? `+${Math.min(...exposed.map((r) => r.first_overlap_h))}` : '—'} unit={exposed.length ? 'h' : undefined} hint="first overlapping forecast sample" />
+          </div>
+          {!receptors.length ? (
+            <StateBlock kind="empty" title="No receptor layer loaded for this AOI">
+              Import documented protected-area, habitat or fishery layers in Cases & Data, then re-run the investigation.
+            </StateBlock>
+          ) : (
+            <Section title="Receptor timeline" note={`Forecast samples at ${a.forecast.steps.map((s: Json) => '+' + s.hours + ' h').join(', ')}. Onset may fall between samples.`}>
+              <div className="receptor-timeline">
+                <div className="rt-row rt-head" aria-hidden>
+                  <span />
+                  <span className="rt-axis">
+                    {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+                      <span key={f} style={{ left: f * 100 + '%' }}>+{Math.round(f * horizon)} h</span>
+                    ))}
+                  </span>
+                  <span />
+                </div>
+                {receptors.map((r, i) => (
+                  <div className="rt-row" key={i}>
+                    <span className="rt-name">
+                      {r.name}
+                      <span className="cell-note">{String(r.kind).replace('_', ' ')} · {r.source_type.toLowerCase()}</span>
+                    </span>
+                    <span className="rt-track">
+                      {r.first_overlap_h !== null ? (
+                        <i
+                          className="rt-bar"
+                          style={{ left: `min(${(r.first_overlap_h / horizon) * 100}%, calc(100% - 8px))` }}
+                          title={`First overlap +${r.first_overlap_h} h`}
+                        />
+                      ) : null}
+                    </span>
+                    <span className="rt-when">
+                      {r.first_overlap_h !== null ? <>+{r.first_overlap_h} h<span className="cell-note">{shortTime(r.first_overlap_time)}</span></> : <span className="muted">No sampled overlap</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Section>
           )}
-          <Detail label="Node evidence" value={current.details} />
-          <Detail
-            label="Source → processing → parameters → hash"
-            value={{
-              source_type: a.source_type,
-              created: a.created,
-              analysis_hash: a.analysis_hash,
-              ...a.provenance,
-            }}
-          />
-        </section>
-      </section>
-    );
-  }
-  return (
-    <section className="panel padded">
-      <h2>What requires attention?</h2>
-      <p>
-        Rule-based findings anchored to this observation: {time(a.observation_time)}. External
-        notifications are not configured.
-      </p>
-      <NextBestObservation
-        caseId={a.case_id}
-        runId={a.run_id}
-        onWatchCreated={(name) => setWatchNotice(`Added "${name}" to the Copernicus watch list.`)}
-      />
-      {watchNotice && (
-        <p className="micro" style={{ color: '#60dab6' }}>
-          {watchNotice}
-        </p>
-      )}
-      {data.alerts.map((e: Json) => (
-        <article className="intelligence-block" key={e.id}>
-          <span className={'severity ' + e.severity}>{e.severity}</span>
-          <h3>{e.title}</h3>
-          <p>{e.why}</p>
-          <p>
-            <strong>Next action:</strong> {e.next_action}
-          </p>
-          <small>
-            {time(e.event_time)} · {coordinate(e.location)}
-          </small>
-          <Detail
-            label="Why this recommendation · rule, data, assumptions, uncertainty"
-            value={e}
-          />
-        </article>
-      ))}
-    </section>
+          <StateBlock kind={data.ecology.species_assessment.startsWith('UNAVAILABLE') ? 'empty' : 'waiting'} compact title="Species-level assessment">
+            {data.ecology.species_assessment.startsWith('UNAVAILABLE')
+              ? 'No authoritative ecological layer is loaded for this AOI, so no species are named or inferred.'
+              : data.ecology.species_assessment}{' '}
+            {data.ecology.biodiversity_coverage}.
+          </StateBlock>
+          <p className="fine">{data.ecology.limitations}</p>
+        </div>
+        <MaritimeMap analysis={a} geography={geography} layers={{ receptors: true, forecast: true, lead: false, selected: false, aoi: false }} height={560} forecastHour={48} label="Forecast × receptors" />
+      </div>
+    </>
   );
 }
-function ResponsePlanner({
+
+/* ------------------------------------------------------------------ */
+/* Response planning                                                   */
+/* ------------------------------------------------------------------ */
+
+export function ResponsePlanning({
   a,
   geography,
   scenarios,
-  changed,
+  reload,
 }: {
   a: Json;
   geography: Json | null;
-  scenarios: Json[];
-  changed: () => Promise<any>;
+  scenarios: Json[] | null;
+  reload: () => Promise<unknown>;
 }) {
-  const [kind, setKind] = useState('no_action'),
+  const [kind, setKind] = useState('dispatch'),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [selected, setSelected] = useState<string>(''),
     [point, setPoint] = useState<number[] | null>(null);
-  const scenario = scenarios.find((s) => s.id === selected) || scenarios[0] || null;
+  const list = scenarios || [];
+  const scenario = list.find((s) => s.id === selected) || list[0] || null;
+  const baselineExposed = (a.impact.receptors as Json[]).filter((r) => r.first_overlap_h !== null);
+
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -525,7 +180,7 @@ function ResponsePlanner({
         asset_name: f.get('asset'),
         asset_source: f.get('source'),
       });
-      await changed();
+      await reload();
       setSelected(created.id);
     } catch (e) {
       setError((e as Error).message);
@@ -533,212 +188,150 @@ function ResponsePlanner({
       setBusy(false);
     }
   }
+
   return (
-    <section className="panel padded">
-      <h2>Response digital twin · planning foundation</h2>
-      <p>
-        Geospatial travel and timing comparison. Asset availability and response effectiveness are
-        unverified.
-      </p>
-      <div className="response-layout">
-        <form onSubmit={submit} className="response-form">
-          <label>
-            Scenario name
-            <input name="name" required maxLength={100} defaultValue="Response planning scenario" />
-          </label>
-          <label>
-            Intervention
-            <select value={kind} onChange={(e) => setKind(e.target.value)}>
-              {[
-                ['no_action', 'No intervention'],
-                ['boom', 'Containment boom'],
-                ['dispatch', 'Dispatch response vessel'],
-                ['interception', 'Cleanup / interception'],
-                ['delayed_response', 'Delayed response'],
-              ].map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Asset name
-            <input name="asset" required defaultValue="Operator-assumed response asset" />
-          </label>
-          <label>
-            Asset source / availability
-            <input
-              name="source"
-              required
-              defaultValue="Operator assumption; availability unverified"
-            />
-          </label>
-          <div className="form-pair">
+    <>
+      <PageHeader
+        eyebrow="Protect"
+        title="Response planning"
+        question="What could operators potentially do, and how does timing compare with no action?"
+      >
+        <p className="notice">Geospatial response-planning scenarios compare travel and arrival timing against the conditional forecast. Interception, removal and cleanup effectiveness are not modeled or guaranteed.</p>
+      </PageHeader>
+      <div className="split planning">
+        <Section title="New planning scenario" surface>
+          <form onSubmit={submit} className="form-grid-2">
+            <label className="span-2">
+              Scenario name
+              <input name="name" required maxLength={100} defaultValue="Dispatch from nearest port" />
+            </label>
+            <label className="span-2">
+              Intervention
+              <select value={kind} onChange={(e) => setKind(e.target.value)}>
+                {[
+                  ['no_action', 'No action (baseline)'],
+                  ['dispatch', 'Dispatch response vessel'],
+                  ['boom', 'Containment boom'],
+                  ['interception', 'Potential interception'],
+                  ['delayed_response', 'Delayed response'],
+                ].map(([v, l]) => (
+                  <option key={v} value={v}>{l}</option>
+                ))}
+              </select>
+            </label>
+            <label className="span-2">
+              Asset
+              <input name="asset" required defaultValue="Operator-assumed response vessel" />
+            </label>
+            <label className="span-2">
+              Availability basis
+              <input name="source" required defaultValue="Operator assumption; availability unverified" />
+            </label>
             <label>
               Departure longitude
-              <input
-                name="lon"
-                type="number"
-                step="any"
-                min="-180"
-                max="180"
-                required={kind !== 'no_action'}
-                disabled={kind === 'no_action'}
-              />
+              <input name="lon" type="number" step="any" min="-180" max="180" defaultValue="80.32" required={kind !== 'no_action'} disabled={kind === 'no_action'} />
             </label>
             <label>
               Departure latitude
-              <input
-                name="lat"
-                type="number"
-                step="any"
-                min="-90"
-                max="90"
-                required={kind !== 'no_action'}
-                disabled={kind === 'no_action'}
-              />
+              <input name="lat" type="number" step="any" min="-90" max="90" defaultValue="13.08" required={kind !== 'no_action'} disabled={kind === 'no_action'} />
             </label>
-          </div>
-          <div className="form-pair">
             <label>
-              Speed (knots)
-              <input
-                name="speed"
-                type="number"
-                min="0.1"
-                max="60"
-                step="0.1"
-                defaultValue="12"
-                required
-              />
+              Speed (kn)
+              <input name="speed" type="number" min="0.1" max="60" step="0.1" defaultValue="12" required />
             </label>
             <label>
               Speed uncertainty (%)
               <input name="uncertainty" type="number" min="0" max="80" defaultValue="20" required />
             </label>
-          </div>
-          <div className="form-pair">
             <label>
               Departure delay (h)
-              <input
-                name="delay"
-                type="number"
-                min="0"
-                max="96"
-                step="0.1"
-                defaultValue="0"
-                required
-              />
+              <input name="delay" type="number" min="0" max="96" step="0.1" defaultValue="0" required />
             </label>
             <label>
               Setup time (h)
-              <input
-                name="setup"
-                type="number"
-                min="0"
-                max="48"
-                step="0.1"
-                defaultValue="1"
-                required
-              />
+              <input name="setup" type="number" min="0" max="48" step="0.1" defaultValue="1" required />
             </label>
-          </div>
-          <label>
-            Forecast target horizon
-            <select name="horizon" defaultValue="24">
-              {[6, 12, 24, 48].map((h) => (
-                <option key={h} value={h}>
-                  +{h} hours
-                </option>
-              ))}
-            </select>
-          </label>
-          <p>
-            Target: {point ? coordinate(point) : 'Selected forecast centroid (modeled)'}. Click the
-            map to select a target.
-          </p>
-          {point && (
-            <button type="button" onClick={() => setPoint(null)}>
-              Use forecast centroid
-            </button>
-          )}
-          <button className="primary" disabled={busy}>
-            {busy ? 'Computing…' : 'Save and evaluate scenario'}
-          </button>
-          {error && (
-            <p role="alert" className="limitation">
-              {error}
+            <label className="span-2">
+              Forecast target horizon
+              <select name="horizon" defaultValue="24">
+                {[6, 12, 24, 48].map((h) => (
+                  <option key={h} value={h}>+{h} h</option>
+                ))}
+              </select>
+            </label>
+            <p className="fine span-2">
+              Target: {point ? coordinate(point) : 'forecast envelope centroid (modeled)'} — click the map to choose a point.
+              {point && (
+                <button type="button" className="link" onClick={() => setPoint(null)}> Use centroid</button>
+              )}
             </p>
-          )}
-        </form>
-        <div>
-          <MaritimeMap
-            analysis={a}
-            geography={geography}
-            selected={null}
-            onSelect={() => {}}
-            focus={point}
-            response={scenario}
-            onPlanningPoint={setPoint}
-          />
-          <p className="micro">
-            ASSUMED asset and straight geodesic route; land and navigation restrictions are not
-            routed.
-          </p>
-        </div>
+            {error && <p className="form-error span-2" role="alert">{error}</p>}
+            <button className="btn btn-primary span-2" disabled={busy}>{busy ? 'Comparing response scenarios…' : 'Compare response'}</button>
+          </form>
+        </Section>
+        <MaritimeMap
+          analysis={a}
+          geography={geography}
+          response={scenario}
+          onPlanningPoint={setPoint}
+          focus={point}
+          layers={{ lead: false, selected: false, aoi: false, receptors: true }}
+          height={640}
+          label="Planning map · click to set target"
+        />
       </div>
-      <h3>Compare saved scenarios</h3>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Scenario</th>
-              <th>Travel</th>
-              <th>Arrival after observation</th>
-              <th>Ready margin to target</th>
-              <th>Exposure after intervention</th>
-            </tr>
-          </thead>
-          <tbody>
-            {scenarios.map((s) => (
-              <tr key={s.id} onClick={() => setSelected(s.id)}>
-                <td>
-                  <button onClick={() => setSelected(s.id)}>{s.input.name}</button>
-                </td>
-                <td>{s.travel_km === null ? 'Baseline' : `${s.travel_km} km`}</td>
-                <td>
-                  {s.arrival_window_h?.map((n: number) => n.toFixed(2)).join(' – ') ||
-                    'Not applicable'}{' '}
-                  {s.arrival_window_h ? 'h' : ''}
-                </td>
-                <td>
-                  {s.margin_to_target_h === null ? 'Not applicable' : `${s.margin_to_target_h} h`}
-                </td>
-                <td>NOT MODELED</td>
+
+      <Section title="Scenario comparison" note="Each scenario is an immutable, hashed planning record bound to this run.">
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Scenario</th>
+                <th>Travel</th>
+                <th>Modeled arrival window</th>
+                <th>Ready margin to target</th>
+                <th>Potential exposure</th>
+                <th>After intervention</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {scenario && (
-        <article className="intelligence-block">
-          <h3>{scenario.input.name}</h3>
-          <p>{scenario.comparison}</p>
-          <p>
-            Baseline:{' '}
-            {
-              scenario.baseline.receptor_exposure.filter((r: Json) => r.first_overlap_h !== null)
-                .length
-            }{' '}
-            loaded receptors with sampled potential exposure. Intervention: unknown.
-          </p>
-          <Detail value={scenario} label="Scenario results, assumptions, opportunities and hash" />
-          <a className="secondary" href={`/api/v1/scenarios/${scenario.id}/export`}>
-            Export scenario and audit JSON
-          </a>
-        </article>
-      )}
-    </section>
+            </thead>
+            <tbody>
+              <tr className="baseline-row">
+                <td><strong>No action</strong><span className="cell-note">Conditional forecast baseline</span></td>
+                <td>—</td>
+                <td>—</td>
+                <td>—</td>
+                <td>{baselineExposed.length} receptor{baselineExposed.length === 1 ? '' : 's'}{baselineExposed[0] ? `, first +${baselineExposed[0].first_overlap_h} h` : ''}</td>
+                <td>—</td>
+              </tr>
+              {list.map((s) => (
+                <tr key={s.id} className={scenario?.id === s.id ? 'on' : ''} onClick={() => setSelected(s.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setSelected(s.id)}>
+                  <td><strong>{s.input.name}</strong><span className="cell-note">{s.input.kind.replace('_', ' ')} · {s.asset?.availability ? 'availability unverified' : 'baseline'}</span></td>
+                  <td className="mono">{s.travel_km === null ? '—' : `${s.travel_km.toFixed(1)} km`}</td>
+                  <td className="mono">{s.arrival_window_h ? `${s.arrival_window_h[0].toFixed(1)}–${s.arrival_window_h[1].toFixed(1)} h` : '—'}</td>
+                  <td>{s.margin_to_target_h === null ? '—' : <Tag tone={s.margin_to_target_h <= 2 ? 'warn' : 'ok'}>{s.margin_to_target_h.toFixed(1)} h</Tag>}</td>
+                  <td>{s.baseline.receptor_exposure.filter((r: Json) => r.first_overlap_h !== null).length} receptors (baseline)</td>
+                  <td><Status state="UNAVAILABLE" text="Not modeled" size="sm" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!list.length && <StateBlock kind="empty" compact title="No planning scenario yet">Create one above to compare timing against the no-action baseline.</StateBlock>}
+        {scenario && (
+          <div className="scenario-detail enter" key={scenario.id}>
+            <p>{scenario.comparison}</p>
+            {scenario.opportunities?.length > 0 && (
+              <ul className="plain">
+                {scenario.opportunities.map((o: Json, i: number) => (
+                  <li key={i}>+{o.hours} h: {o.status.replaceAll('_', ' ').toLowerCase()}{o.conservative_lead_h !== null && o.conservative_lead_h !== undefined ? ` · lead ${o.conservative_lead_h} h` : ''}</li>
+                ))}
+              </ul>
+            )}
+            <p className="fine">Assumptions: {scenario.assumptions.join('; ')}. Record <span className="mono">{scenario.sha256?.slice(0, 16)}</span>.</p>
+            <a className="btn btn-quiet btn-sm" href={`/api/v1/scenarios/${scenario.id}/export`}>Export scenario record</a>
+          </div>
+        )}
+      </Section>
+    </>
   );
 }
