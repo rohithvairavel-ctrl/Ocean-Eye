@@ -97,9 +97,88 @@ def test_watch_area_rejects_invalid_input(isolated):
 # ---------------------------------------------------------------------------
 
 
-def test_check_watch_area_auth_required_without_credentials(isolated):
+def test_check_watch_area_discovers_via_public_catalogue_without_credentials(isolated):
+    """CDSE's STAC catalogue is publicly searchable with no OAuth client at all --
+    only imagery retrieval (the Process API) needs credentials. A watch area with
+    no CDSE_CLIENT_ID/SECRET configured must still discover real scenes; only the
+    per-scene imagery step is AUTH_REQUIRED."""
     area = copernicus.create_watch_area("No creds", [80.9, 12.1], 10)
-    result = copernicus.check_watch_area(area)
+
+    def handler(request):
+        url = str(request.url)
+        assert "Authorization" not in request.headers  # genuinely unauthenticated
+        if "stac.dataspace" in url and "/items" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "features": [
+                        {
+                            "id": "S1A_PUBLIC_ONLY",
+                            "properties": {"datetime": "2026-09-20T00:00:00Z"},
+                            "assets": {"data": {}},
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as fake:
+        result = copernicus.check_watch_area(area, fake)
+
+    assert result["status"] == "OK"
+    assert len(result["new_observations"]) == 1
+    assert result["new_observations"][0]["status"] == "AUTH_REQUIRED"  # imagery, not discovery
+    observations = copernicus.list_observations(area["id"])
+    assert observations[0]["status"] == "AUTH_REQUIRED"
+    assert observations[0]["mode"] == "REAL"  # the discovered scene itself is real, not fabricated
+    assert observations[0]["provenance"]["catalogue_source"] == "PUBLIC_CATALOGUE"
+    refreshed = copernicus.get_watch_area(area["id"])
+    assert refreshed["last_status"] == "OK"
+    assert refreshed["consecutive_failures"] == 0
+
+
+def test_check_watch_area_falls_back_to_authenticated_search_when_public_needs_auth(isolated, monkeypatch):
+    """Defensive path: if a deployment/collection ever requires auth even for STAC
+    search (401/403), and credentials ARE configured, fall back to the token-based
+    search rather than reporting AUTH_REQUIRED outright."""
+    monkeypatch.setenv("CDSE_CLIENT_ID", "id")
+    monkeypatch.setenv("CDSE_CLIENT_SECRET", "secret")
+    area = copernicus.create_watch_area("Auth-gated catalogue", [80.9, 12.1], 10)
+
+    def handler(request):
+        url = str(request.url)
+        if "openid-connect/token" in url:
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 600})
+        if "stac.dataspace" in url and "/items" in url:
+            return httpx.Response(401, json={"detail": "auth required for this collection"})
+        if "stac.dataspace" in url:  # authenticated POST /v1/search fallback
+            assert request.headers.get("Authorization") == "Bearer tok"
+            return httpx.Response(
+                200,
+                json={"features": [{"id": "S1A_AUTH_FALLBACK", "properties": {"datetime": "2026-09-20T00:00:00Z"}, "assets": {}}]},
+            )
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as fake:
+        result = copernicus.check_watch_area(area, fake, fetch_imagery=False)
+
+    assert result["status"] == "OK"
+    assert len(result["new_observations"]) == 1
+    observations = copernicus.list_observations(area["id"])
+    assert observations[0]["provenance"]["catalogue_source"] == "AUTHENTICATED"
+
+
+def test_check_watch_area_public_catalogue_needs_auth_and_none_configured(isolated):
+    """If the public endpoint itself demands auth and no credentials are
+    configured, the watch area correctly reports AUTH_REQUIRED (not a silent
+    empty result) -- this is the one case discovery still can't proceed."""
+    area = copernicus.create_watch_area("Locked catalogue", [80.9, 12.1], 10)
+
+    def handler(request):
+        return httpx.Response(401, json={"detail": "auth required"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as fake:
+        result = copernicus.check_watch_area(area, fake)
     assert result["status"] == "AUTH_REQUIRED"
     refreshed = copernicus.get_watch_area(area["id"])
     assert refreshed["last_status"] == "AUTH_REQUIRED"
@@ -194,9 +273,34 @@ def test_check_watch_area_discovers_and_dedups(isolated, monkeypatch):
     assert events.count("copernicus_observation") == 1
 
 
-def test_monitor_tick_records_auth_required_without_network(isolated):
+def test_monitor_tick_discovers_via_public_catalogue_without_credentials(isolated, monkeypatch):
+    """Scheduled ticks no longer short-circuit to AUTH_REQUIRED just because no
+    CDSE client is configured -- they attempt real (mocked, here) public
+    catalogue discovery like a manual check-now would."""
     import asyncio
 
+    def handler(request):
+        return httpx.Response(200, json={"features": []})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        copernicus.httpx, "Client", lambda *a, **kw: real_client(transport=httpx.MockTransport(handler))
+    )
+    copernicus.create_watch_area("Ticked", [80.9, 12.1], 10)
+    results = asyncio.run(copernicus.monitor_tick())
+    assert results and all(r["status"] == "OK" for r in results)
+
+
+def test_monitor_tick_still_reports_auth_required_when_catalogue_itself_needs_auth(isolated, monkeypatch):
+    import asyncio
+
+    def handler(request):
+        return httpx.Response(401, json={"detail": "auth required"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        copernicus.httpx, "Client", lambda *a, **kw: real_client(transport=httpx.MockTransport(handler))
+    )
     copernicus.create_watch_area("Ticked", [80.9, 12.1], 10)
     results = asyncio.run(copernicus.monitor_tick())
     assert results and all(r["status"] == "AUTH_REQUIRED" for r in results)
@@ -317,6 +421,7 @@ def test_auto_analyze_completes_loop_when_case_has_real_inputs(isolated, monkeyp
 def test_status_reports_configuration(isolated, monkeypatch):
     assert copernicus.status()["credentials_configured"] is False
     assert copernicus.status()["mode"] == "DEMO"
+    assert copernicus.status()["public_catalogue_search"] is True  # true regardless of credentials
     monkeypatch.setenv("CDSE_CLIENT_ID", "id")
     monkeypatch.setenv("CDSE_CLIENT_SECRET", "secret")
     assert copernicus.status()["credentials_configured"] is True
@@ -328,7 +433,21 @@ def test_status_reports_configuration(isolated, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_copernicus_api_crud(client):
+def test_copernicus_api_crud(client, monkeypatch):
+    # check-now builds its own httpx.Client internally; redirect it to a mock
+    # transport so this test never reaches the real network, matching every
+    # other test in this file. An empty catalogue response is enough here --
+    # public-catalogue discovery itself is covered in detail above.
+    def handler(request):
+        return httpx.Response(200, json={"features": []})
+
+    import backend.copernicus_api as copernicus_api_module
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        copernicus_api_module.httpx, "Client", lambda *a, **kw: real_client(transport=httpx.MockTransport(handler))
+    )
+
     created = client.post(
         "/api/v1/copernicus/watch-areas",
         json={"name": "API watch", "center": [80.9, 12.1], "radius_km": 15},
@@ -341,7 +460,8 @@ def test_copernicus_api_crud(client):
     ).json()
     assert paused["status"] == "PAUSED"
     checked = client.post(f"/api/v1/copernicus/watch-areas/{created['id']}/check-now").json()
-    assert checked["status"] == "AUTH_REQUIRED"  # no credentials configured in tests
+    assert checked["status"] == "OK"  # public catalogue discovery needs no credentials
+    assert checked["new_observations"] == []  # mocked catalogue returned no scenes
     observations = client.get(f"/api/v1/copernicus/watch-areas/{created['id']}/observations").json()
     assert observations == []
     status = client.get("/api/v1/copernicus/status").json()

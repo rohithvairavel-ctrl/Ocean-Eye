@@ -32,6 +32,7 @@ MODEL_VERSION = "copernicus-monitor-1.0"
 
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 STAC_SEARCH_URL = "https://stac.dataspace.copernicus.eu/v1/search"
+STAC_ITEMS_URL = "https://stac.dataspace.copernicus.eu/v1/collections/{collection}/items"
 PROCESS_URL = "https://sh.dataspace.copernicus.eu/process/v1"
 COLLECTION = "sentinel-1-grd"
 
@@ -110,6 +111,30 @@ def stac_search(client: httpx.Client, token, bbox, start, end, limit=10):
     )
     if response.status_code == 401:
         raise CredentialsMissing("Copernicus STAC search returned 401; token expired or invalid.")
+    response.raise_for_status()
+    return response.json().get("features", [])
+
+
+def stac_search_public(client: httpx.Client, bbox, start, end, limit=10):
+    """Unauthenticated STAC catalogue browse.
+
+    The Copernicus Data Space Ecosystem's STAC catalogue is publicly queryable
+    for metadata discovery -- only the Sentinel Hub Process API (actual pixel
+    retrieval, see process_backscatter) requires an OAuth2 client. This lets
+    watch areas discover real Sentinel-1 scenes with no credentials at all.
+
+    Returns None (not a real "no results") if this deployment/collection
+    responds 401/403, signalling the caller should fall back to the
+    authenticated stac_search() when credentials are available. Any other
+    network/server failure raises httpx.HTTPError like the rest of this module.
+    """
+    response = client.get(
+        STAC_ITEMS_URL.format(collection=COLLECTION),
+        params={"bbox": ",".join(str(v) for v in bbox), "datetime": f"{start}/{end}", "limit": limit},
+        timeout=30,
+    )
+    if response.status_code in (401, 403):
+        return None
     response.raise_for_status()
     return response.json().get("features", [])
 
@@ -441,9 +466,16 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
             start.isoformat().replace("+00:00", "Z"),
             end.isoformat().replace("+00:00", "Z"),
         )
+        token = None
+        catalogue_source = "PUBLIC_CATALOGUE"
         try:
-            token = get_token(client)
-            features = stac_search(client, token, bbox, window[0], window[1])
+            features = stac_search_public(client, bbox, window[0], window[1])
+            if features is None:
+                # This deployment/collection needs auth even for search -- fall
+                # back to the authenticated path if credentials are configured.
+                token = get_token(client)
+                features = stac_search(client, token, bbox, window[0], window[1])
+                catalogue_source = "AUTHENTICATED"
         except CredentialsMissing as exc:
             _record_status(watch_id, "AUTH_REQUIRED", str(exc))
             return {"watch_id": watch_id, "status": "AUTH_REQUIRED", "message": str(exc)}
@@ -475,12 +507,17 @@ def check_watch_area(area, client: "httpx.Client | None" = None, fetch_imagery=T
                 "discovered": storage.now(),
                 "watch_center": [area["center_lon"], area["center_lat"]],
                 "watch_radius_km": area["radius_km"],
+                "catalogue_source": catalogue_source,
             }
             status, artifact_name, sha256 = "DISCOVERED", None, None
             if fetch_imagery:
                 acquired = feature.get("properties", {}).get("datetime") or window[1]
                 try:
-                    raw = process_backscatter(client, token, bbox, (window[0], acquired))
+                    # Discovery may have used the public, unauthenticated catalogue
+                    # (token is still None here); imagery retrieval always needs a
+                    # real OAuth2 token, so fetch one now if we haven't already.
+                    imagery_token = token or get_token(client)
+                    raw = process_backscatter(client, imagery_token, bbox, (window[0], acquired))
                     artifact_name, sha256 = _save_calibrated_geotiff(stac_id, raw, feature)
                     status = "READY_TO_IMPORT"
                     if area.get("auto_analyze"):
@@ -548,13 +585,10 @@ async def monitor_tick():
     due = [a for a in areas if _due(a)]
     if not due:
         return []
-    if not credentials_configured():
-        for a in due:
-            await asyncio.to_thread(
-                _record_status, a["id"], "AUTH_REQUIRED",
-                "CDSE_CLIENT_ID / CDSE_CLIENT_SECRET are not set.",
-            )
-        return [{"watch_id": a["id"], "status": "AUTH_REQUIRED"} for a in due]
+    # Catalogue discovery works against the public CDSE STAC endpoint with no
+    # credentials at all; only imagery retrieval (inside check_watch_area)
+    # needs CDSE_CLIENT_ID/CDSE_CLIENT_SECRET, so scheduled ticks always
+    # attempt a real discovery pass rather than short-circuiting here.
     results = []
     with httpx.Client() as client:
         for a in due:
@@ -599,21 +633,27 @@ async def stop_monitor():
 
 
 def status():
+    configured = credentials_configured()
     return {
         "model_version": MODEL_VERSION,
-        "credentials_configured": credentials_configured(),
-        "mode": "REAL" if credentials_configured() else "DEMO",
+        "credentials_configured": configured,
+        "mode": "REAL" if configured else "DEMO",
+        "public_catalogue_search": True,
         "collection": COLLECTION,
         "stac_endpoint": STAC_SEARCH_URL,
+        "stac_items_endpoint": STAC_ITEMS_URL.format(collection=COLLECTION),
         "process_endpoint": PROCESS_URL,
         "search_window_days": SEARCH_WINDOW_DAYS,
         "poll_granularity_seconds": POLL_GRANULARITY_SECONDS,
         "max_backoff_minutes": MAX_BACKOFF_MINUTES,
         "watch_areas": list_watch_areas(),
         "note": (
-            "Sentinel-1 GRD discovery and SIGMA0_ELLIPSOID backscatter retrieval from the "
-            "Copernicus Data Space Ecosystem. Discovered scenes are calibrated to sigma0_db and "
-            "saved as REAL inputs ready for manual import into a case; nothing is auto-classified "
-            "as oil and no case is created automatically."
+            "Sentinel-1 GRD scene discovery uses the Copernicus Data Space Ecosystem's public "
+            "STAC catalogue and needs no credentials. Retrieving calibrated SIGMA0_ELLIPSOID "
+            "backscatter imagery for auto-analyze needs CDSE_CLIENT_ID/CDSE_CLIENT_SECRET "
+            "(Sentinel Hub Process API); discovered scenes are recorded as AUTH_REQUIRED for "
+            "imagery until credentials are supplied. Discovered scenes are calibrated to sigma0_db "
+            "and saved as REAL inputs ready for manual import into a case; nothing is "
+            "auto-classified as oil and no case is created automatically."
         ),
     }

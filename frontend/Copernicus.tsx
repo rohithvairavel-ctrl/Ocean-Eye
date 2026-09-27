@@ -28,7 +28,7 @@ export function CopernicusBadge({ status }: { status: Json | null }) {
   return (
     <span className={'badge ' + (status.credentials_configured ? 'green' : 'amber')}>
       <SatelliteDish size={11} style={{ marginRight: 4 }} />
-      {status.credentials_configured ? 'COPERNICUS LIVE' : 'COPERNICUS DEMO — NOT CONFIGURED'}
+      {status.credentials_configured ? 'COPERNICUS LIVE' : 'CATALOGUE LIVE · IMAGERY NEEDS AUTH'}
     </span>
   );
 }
@@ -218,7 +218,11 @@ export default function CopernicusMonitor() {
       <div className={'copernicus-summary ' + (status.credentials_configured ? 'live' : 'demo')}>
         <SatelliteDish size={20} />
         <div>
-          <strong>{status.credentials_configured ? 'LIVE — credentials configured' : 'DEMO — CDSE credentials not configured'}</strong>
+          <strong>
+            {status.credentials_configured
+              ? 'LIVE — credentials configured'
+              : 'PUBLIC CATALOGUE — imagery retrieval needs credentials'}
+          </strong>
           <p className="micro">
             Collection {status.collection} · discovery window {status.search_window_days} days ·
             polling every {status.poll_granularity_seconds}s per watch area (backed off up to{' '}
@@ -228,9 +232,11 @@ export default function CopernicusMonitor() {
       </div>
       {!status.credentials_configured && (
         <p className="limitation">
-          <CircleAlert size={13} /> Set CDSE_CLIENT_ID and CDSE_CLIENT_SECRET as environment
-          variables (see .env.example) to enable live discovery. Watch areas remain saved and will
-          report AUTH_REQUIRED, not fail silently, until credentials are supplied.
+          <CircleAlert size={13} /> Sentinel-1 scene discovery works against the public Copernicus
+          Data Space catalogue with no credentials. Set CDSE_CLIENT_ID and CDSE_CLIENT_SECRET as
+          environment variables (see .env.example) to also retrieve calibrated SIGMA0 imagery for
+          auto-analyze — until then, newly discovered scenes are recorded and marked AUTH_REQUIRED
+          for imagery, not fetched silently or faked.
         </p>
       )}
       <p className="micro">{status.note}</p>
