@@ -153,8 +153,8 @@ export default function MaritimeMap({
     [playing, setPlaying] = useState(false),
     [frame, setFrame] = useState(0),
     [inspect, setInspect] = useState<Inspect>(null);
-  const handlers = useRef({ onSelect, onCase, onPlanningPoint });
-  handlers.current = { onSelect, onCase, onPlanningPoint };
+  const handlers = useRef({ onSelect, onCase, onPlanningPoint, onOpenVessel });
+  handlers.current = { onSelect, onCase, onPlanningPoint, onOpenVessel };
 
   const frames: Json[] = useMemo(
     () =>
@@ -172,6 +172,7 @@ export default function MaritimeMap({
   const defaultFrame = frames.findIndex((f) => f.kind === 'PREDICTED' && f.hours === forecastHour);
   const current = frames[frame];
   const lead = a?.vessels?.[0];
+  const selectedVessel = a?.vessels?.find((v: Json) => v.mmsi === selected);
 
   useEffect(() => {
     setFrame(defaultFrame >= 0 ? defaultFrame : frames.findIndex((f) => f.hours === 0));
@@ -267,11 +268,28 @@ export default function MaritimeMap({
     const shape = (value: Json, style: L.PathOptions, onClick?: () => void, hover?: string) => {
       const layer = L.geoJSON(value as any, { style: () => style }).addTo(g);
       if (hover) layer.bindTooltip(tip(hover), { sticky: true, className: 'map-tip' });
-      if (onClick)
+      if (onClick) {
         layer.on('click', (e: L.LeafletMouseEvent) => {
           L.DomEvent.stopPropagation(e);
           onClick();
         });
+        layer.eachLayer((child: any) => {
+          const makeAccessible = () => {
+            const element = child.getElement?.() as SVGElement | undefined;
+            if (!element) return;
+            element.setAttribute('tabindex', '0');
+            element.setAttribute('role', 'button');
+            if (hover) element.setAttribute('aria-label', hover);
+            element.onkeydown = (event: KeyboardEvent) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              onClick();
+            };
+          };
+          child.on?.('add', makeAccessible);
+          makeAccessible();
+        });
+      }
       return layer;
     };
     const dot = (p: number[], color: string, radius = 3, fill = 0.8) =>
@@ -339,14 +357,6 @@ export default function MaritimeMap({
     if (predicted && show.particles && !(current && current.hours < 0))
       for (const p of predicted.particles || []) dot(p, C.predicted, 1.6, 0.6);
 
-    if (show.slick)
-      shape(
-        a.spill.geometry,
-        { color: C.observed, weight: 1.6, fillColor: C.observed, fillOpacity: 0.32 },
-        () => setInspect({ type: 'slick', data: a.spill }),
-        'Observed oil candidate · classification pending',
-      );
-
     if (show.returns)
       for (const r of a.dark.sar_returns)
         dot(r.coordinates, r.matched ? C.success : C.assumed, 4.5)
@@ -373,6 +383,9 @@ export default function MaritimeMap({
             html: `<span style="--flow-delay:${index * -0.18}s;transform:rotate(${angle}deg)">↝</span>`,
           }),
           interactive: true,
+          keyboard: true,
+          title: `Ocean-current forcing at ${time(row.time)}`,
+          alt: 'Ocean-current direction',
         })
           .addTo(g)
           .bindTooltip(tip(`Ocean-current forcing · ${time(row.time)} · E ${row.current_east_ms} / N ${row.current_north_ms} m/s`), { className: 'map-tip' });
@@ -399,6 +412,7 @@ export default function MaritimeMap({
         () => {
           handlers.current.onSelect?.(v.mmsi);
           setInspect({ type: 'vessel', data: v });
+          handlers.current.onOpenVessel?.(v.mmsi);
         },
         `${v.name} · observed AIS positions (segments do not prove the route)`,
       );
@@ -416,6 +430,7 @@ export default function MaritimeMap({
               html: `<span style="transform:rotate(${course}deg)">▲</span>`,
             }),
             interactive: false,
+            keyboard: false,
           }).addTo(g);
         }
       }
@@ -429,6 +444,7 @@ export default function MaritimeMap({
             L.DomEvent.stopPropagation(e);
             handlers.current.onSelect?.(v.mmsi);
             setInspect({ type: 'vessel', data: v });
+            handlers.current.onOpenVessel?.(v.mmsi);
           })
           .bindTooltip(tip(`${v.name} · ${p === nearestPoint(v) ? 'observed ' + shortTime(p.time) : 'last observed position'}`), { className: 'map-tip' });
       const closest = v.track.length
@@ -450,9 +466,9 @@ export default function MaritimeMap({
     };
     const sel = a.vessels.find((v: Json) => v.mmsi === selected);
     if (show.ais)
-      for (const v of a.vessels) {
+      for (const v of a.vessels.slice(0, 5)) {
         if (v.mmsi === sel?.mmsi || v.mmsi === lead?.mmsi) continue;
-        drawVessel(v, C.vessel, false, true);
+        drawVessel(v, sel ? '#596260' : C.vessel, false, true);
       }
     if (sel && lead && sel.mmsi !== lead.mmsi) {
       if (show.lead) drawVessel(lead, C.lead, false);
@@ -460,6 +476,16 @@ export default function MaritimeMap({
     } else if (lead && (show.lead || show.selected)) {
       drawVessel(lead, C.selection, true);
     }
+
+    // Keep the observed candidate above crossing tracks so its evidence remains
+    // directly clickable. Tracks stay selectable everywhere outside the polygon.
+    if (show.slick)
+      shape(
+        a.spill.geometry,
+        { color: C.observed, weight: 1.8, fillColor: C.observed, fillOpacity: 0.34 },
+        () => setInspect({ type: 'slick', data: a.spill }),
+        'Observed oil candidate · classification pending',
+      );
 
     if (show.aoi && candidates)
       for (const c of candidates)
@@ -506,6 +532,13 @@ export default function MaritimeMap({
                 ? `Hindcast T${current.hours} h`
                 : `Forecast T+${current.hours} h`}{' '}
             · {shortTime(new Date(Date.parse(a.observation_time) + current.hours * 3600000).toISOString())}
+          </span>
+        )}
+        {a && !global && (
+          <span className="map-story">
+            Candidate {a.spill.area_km2.toFixed(1)} km² · Lead {lead?.name || 'waiting for AIS'}
+            {selectedVessel && selectedVessel.mmsi !== lead?.mmsi ? ` · Selected ${selectedVessel.name}` : ''}
+            {' · '}Current arrows · Forecast target +{current?.hours > 0 ? current.hours : forecastHour} h
           </span>
         )}
       </div>

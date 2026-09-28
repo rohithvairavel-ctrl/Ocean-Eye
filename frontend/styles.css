@@ -1282,6 +1282,7 @@ h3 {
   border-radius: var(--r2);
   font-size: 12px;
   pointer-events: none;
+  max-width: min(620px, calc(100% - 82px));
 }
 .map-chip strong {
   font-weight: 600;
@@ -1289,6 +1290,12 @@ h3 {
 }
 .map-chip span {
   color: var(--text-2);
+}
+.map-chip .map-story {
+  margin-top: 3px;
+  color: var(--text-1);
+  font-size: 11.5px;
+  line-height: 1.35;
 }
 .map-tools {
   position: absolute;
@@ -1582,6 +1589,12 @@ input[type='range'] {
 }
 .leaflet-interactive.vessel-track:hover,
 .leaflet-interactive.selected-track {
+  stroke-width: 3.5;
+  stroke-opacity: 1;
+}
+.leaflet-interactive[role='button']:focus-visible {
+  outline: none;
+  stroke: var(--teal);
   stroke-width: 3.5;
   stroke-opacity: 1;
 }
