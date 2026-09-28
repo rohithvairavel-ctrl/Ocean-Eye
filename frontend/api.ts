@@ -1,5 +1,6 @@
 // JSON contracts mirror backend OpenAPI. Scientific outputs carry their provenance.
 export type Json = Record<string, any>;
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 export class ApiError extends Error {
   status: number;
@@ -12,7 +13,7 @@ export class ApiError extends Error {
 export async function api<T = Json>(path: string, options: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch('/api/v1' + path, options);
+    response = await fetch(API_BASE + '/api/v1' + path, options);
   } catch {
     throw new ApiError(
       "OCEAN-EYE's local service is not responding. Start it with start.ps1 (or npm run dev), then retry — saved evidence is unaffected.",

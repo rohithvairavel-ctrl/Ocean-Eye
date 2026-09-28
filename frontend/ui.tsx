@@ -70,6 +70,7 @@ const STATUS: Record<string, { tone: Tone; icon: any; text?: string }> = {
   NO_NEW_DATA: { tone: 'neutral', icon: Clock3, text: 'No new data' },
   WAITING: { tone: 'neutral', icon: Clock3 },
   WAITING_FOR_DATA: { tone: 'neutral', icon: Clock3, text: 'Waiting for data' },
+  WAITING_FOR_AIS: { tone: 'neutral', icon: Clock3, text: 'Waiting for AIS' },
   PENDING: { tone: 'neutral', icon: Clock3 },
   NOT_CHALLENGED: { tone: 'neutral', icon: CircleDashed, text: 'Not challenged' },
   DISCOVERED: { tone: 'neutral', icon: CircleCheck },

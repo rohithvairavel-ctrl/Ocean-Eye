@@ -308,8 +308,15 @@ export default function CopernicusWatch({
                         </td>
                         <td>{o.acquired ? time(o.acquired) : '—'}<span className="cell-note">discovered {shortTime(o.created)}</span></td>
                         <td className="small">{[s.orbit_state, s.relative_orbit && `rel ${s.relative_orbit}`].filter(Boolean).join(' · ') || '—'}</td>
-                        <td><Status state={o.status} /></td>
-                        <td className="small">{auto ? <><Status state={auto.status} size="sm" /> <span className="cell-note">{auto.missing?.join('; ') || auto.reason || ''}</span></> : '—'}</td>
+                        <td>
+                          <Status state={o.status} />
+                          {o.provenance.calibrated_imagery && <span className="cell-note">SIGMA0 · SHA-256 {o.provenance.calibrated_imagery.sha256.slice(0, 10)}…</span>}
+                          {o.provenance.screening && <span className="cell-note">Screening: {label(o.provenance.screening.status)}</span>}
+                        </td>
+                        <td className="small">
+                          {auto ? <><Status state={auto.status} size="sm" /> <span className="cell-note">{auto.missing?.join('; ') || auto.reason || ''}</span></> : o.provenance.investigation_state ? <Status state={o.provenance.investigation_state} size="sm" /> : '—'}
+                          {o.provenance.marine_forcing && <span className="cell-note">Marine: {o.provenance.marine_forcing.records} hourly records · wind unavailable</span>}
+                        </td>
                       </tr>
                     );
                   })}

@@ -30,6 +30,16 @@ def _tiff_bytes(value=0.02):
         return memfile.read()
 
 
+def test_calibrated_imagery_rejects_all_nodata(isolated):
+    raw = _tiff_bytes(value=np.nan)
+    feature = {"properties": {"datetime": "2026-09-20T00:00:00Z"}}
+
+    with pytest.raises(copernicus.InvalidImagery, match="insufficient valid backscatter"):
+        copernicus._save_calibrated_geotiff("S1_ALL_NODATA", raw, feature)
+
+    assert not (isolated / "satellite" / "copernicus_S1_ALL_NODATA.tif").exists()
+
+
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     import backend.app as app_module
@@ -186,6 +196,7 @@ def test_check_watch_area_public_catalogue_needs_auth_and_none_configured(isolat
 
 
 def test_check_watch_area_offline_on_network_error(isolated, monkeypatch):
+    monkeypatch.setattr(copernicus, "CATALOGUE_RETRY_DELAYS_SECONDS", (0, 0))
     monkeypatch.setenv("CDSE_CLIENT_ID", "id")
     monkeypatch.setenv("CDSE_CLIENT_SECRET", "secret")
     area = copernicus.create_watch_area("Unreachable", [80.9, 12.1], 10)
@@ -197,6 +208,26 @@ def test_check_watch_area_offline_on_network_error(isolated, monkeypatch):
         result = copernicus.check_watch_area(area, fake)
     assert result["status"] == "OFFLINE"
     assert copernicus.get_watch_area(area["id"])["last_status"] == "OFFLINE"
+
+
+def test_catalogue_recovers_after_transport_failure(isolated, monkeypatch):
+    monkeypatch.setattr(copernicus, "CATALOGUE_RETRY_DELAYS_SECONDS", (0, 0))
+    area = copernicus.create_watch_area("Recovery", [80.9, 12.1], 10)
+
+    def offline(request):
+        raise httpx.ConnectError("temporary DNS failure", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(offline)) as fake:
+        assert copernicus.check_watch_area(area, fake, fetch_imagery=False)["status"] == "OFFLINE"
+    failed = copernicus.get_watch_area(area["id"])
+    assert failed["last_error"] and failed["consecutive_failures"] == 1
+
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"features": []}))) as fake:
+        recovered = copernicus.check_watch_area(failed, fake, fetch_imagery=False)
+    assert recovered["status"] == "OK"
+    current = copernicus.get_watch_area(area["id"])
+    assert current["last_error"] is None and current["consecutive_failures"] == 0
+    assert storage.events("global")[-1]["action"] == "catalogue_recovered"
 
 
 def test_check_watch_area_auth_rejected_by_token_endpoint(isolated, monkeypatch):

@@ -121,25 +121,28 @@ export default function Overview({
     return (
       <>
         <PageHeader
-          eyebrow="OCEAN-EYE"
-          title="No investigation open"
-          question="Open the reproducible demonstration case or import calibrated SAR, AIS and forcing inputs to begin."
+          eyebrow="Near-real-time Earth observation"
+          title="Live operations"
+          question="Monitor genuine external providers and Sentinel-1 acquisitions, or open a clearly labelled investigation."
         />
         <LiveStrip live={live} error={liveError} refresh={refreshLive} navigate={navigate} />
         <div className="welcome">
           <p>
-            OCEAN-EYE traces a SAR oil candidate back to a modeled origin, screens vessels against the evidence,
-            actively tries to break its own conclusion, and records every step for reproduction.
+            Provider health and watched-area activity below come from the backend scheduler. Open Copernicus Watch to inspect
+            real catalogue observations, calibrated SAR provenance, acquisition plans and ocean-model coverage.
           </p>
           <div className="welcome-actions">
+            <button className="btn btn-primary" onClick={() => navigate('Copernicus Watch')}>
+              Open live operations <ArrowRight size={15} />
+            </button>
             <button className="btn btn-primary" onClick={onDemo} disabled={busy}>
-              <Play size={15} /> Open demo investigation
+              <Play size={15} /> Create demo case
             </button>
             <button className="btn btn-quiet" onClick={onImport}>
               <Plus size={15} /> Import case
             </button>
           </div>
-          <p className="fine">Demo: synthetic Sentinel-1-compatible scene, 20 fictional vessels, seeded forcing. Clearly labelled DEMO throughout.</p>
+          <p className="fine"><strong>Live Operations</strong> uses external provider state. <strong>Demo Case</strong> uses a synthetic Sentinel-1-compatible scene, fictional vessels and seeded forcing, labelled DEMO throughout.</p>
         </div>
       </>
     );

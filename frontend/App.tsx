@@ -136,7 +136,10 @@ export default function App() {
       .then(([list, g, h]) => {
         setGeography(g);
         setHealth(h);
-        if (list.length) return load(list[0].id);
+        // Live Operations is the neutral default. Investigations are opened
+        // explicitly so a saved demo never masquerades as current operations.
+        setCaseId('');
+        setA(null);
         setLoadingCase(false);
       })
       .catch((e) => {
@@ -424,6 +427,7 @@ export default function App() {
                   <button
                     key={name}
                     className={page === name ? 'active' : ''}
+                    aria-label={name}
                     aria-current={page === name ? 'page' : undefined}
                     title={collapsed ? name : undefined}
                     onClick={() => navigate(name)}
@@ -453,15 +457,22 @@ export default function App() {
                 value={caseId}
                 onChange={(e) =>
                   action(async () => {
-                    await load(e.target.value);
+                    if (e.target.value) await load(e.target.value);
+                    else {
+                      setCaseId('');
+                      setA(null);
+                      setSelected(null);
+                      setLoadingCase(false);
+                      navigate('Overview');
+                    }
                   })
                 }
                 aria-label="Open investigation"
               >
-                {!cases.length && <option value="">No investigations</option>}
+                <option value="">Live operations</option>
                 {cases.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name}{c.source_type === 'SYNTHETIC' ? ' · demo' : ''} · {c.id.slice(0, 4)}
+                    {c.source_type === 'SYNTHETIC' ? 'Demo case · ' : 'Real case · '}{c.name} · {c.id.slice(0, 4)}
                   </option>
                 ))}
               </select>

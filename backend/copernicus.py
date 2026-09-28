@@ -56,6 +56,7 @@ POLL_GRANULARITY_SECONDS = 30
 SEARCH_WINDOW_DAYS = 10
 SYNC_STALE_SECONDS = 180  # a SYNCING marker older than this is treated as interrupted
 IMAGERY_RETRY_LIMIT = 3  # previously AUTH_REQUIRED scenes retried per pass once credentials exist
+CATALOGUE_RETRY_DELAYS_SECONDS = (0.25, 0.75)
 
 _token_cache = {"value": None, "expires_at": 0.0}
 _monitor_task = None
@@ -70,6 +71,10 @@ class CredentialsMissing(RuntimeError):
 
 class RateLimited(RuntimeError):
     """Raised when a Copernicus endpoint answers HTTP 429."""
+
+
+class InvalidImagery(RuntimeError):
+    """Raised when the Process API response is a readable but unusable raster."""
 
 
 def credentials_configured():
@@ -150,11 +155,19 @@ def stac_search_public(client: httpx.Client, bbox, start, end, limit=10):
     authenticated stac_search() when credentials are available. Any other
     network/server failure raises httpx.HTTPError like the rest of this module.
     """
-    response = client.get(
-        STAC_ITEMS_URL.format(collection=COLLECTION),
-        params={"bbox": ",".join(str(v) for v in bbox), "datetime": f"{start}/{end}", "limit": limit},
-        timeout=30,
-    )
+    request = {
+        "params": {"bbox": ",".join(str(v) for v in bbox), "datetime": f"{start}/{end}", "limit": limit},
+        "timeout": 30,
+    }
+    for attempt in range(len(CATALOGUE_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            response = client.get(STAC_ITEMS_URL.format(collection=COLLECTION), **request)
+            if response.status_code not in (502, 503, 504) or attempt == len(CATALOGUE_RETRY_DELAYS_SECONDS):
+                break
+        except httpx.TransportError:
+            if attempt == len(CATALOGUE_RETRY_DELAYS_SECONDS):
+                raise
+        time.sleep(CATALOGUE_RETRY_DELAYS_SECONDS[attempt])
     if response.status_code in (401, 403):
         return None
     if response.status_code == 429:
@@ -267,7 +280,13 @@ def scene_time_range(feature, fallback_end):
     props = feature.get("properties") or {}
     start, end = props.get("start_datetime"), props.get("end_datetime")
     if start and end:
-        return start, end
+        # The Process API treats temporal bounds as selection filters. Padding
+        # the catalogue's exact sensing interval avoids an edge-exclusive
+        # query returning a valid GeoTIFF containing only NoData.
+        return (
+            (parse_timestamp(start) - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+            (parse_timestamp(end) + timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        )
     acquired = props.get("datetime")
     if acquired:
         t = parse_timestamp(acquired)
@@ -429,19 +448,25 @@ def _record_status(watch_id, status, message, scene_count=None, new_count=0):
     now = storage.now()
     with storage.connect() as db:
         row = db.execute("SELECT consecutive_failures FROM watch_areas WHERE id=?", (watch_id,)).fetchone()
-        failures = row["consecutive_failures"] if row else 0
+        prior_failures = row["consecutive_failures"] if row else 0
         ok = status == "OK"
-        failures = 0 if ok else failures + 1
+        failures = 0 if ok else prior_failures + 1
         db.execute(
             """UPDATE watch_areas SET last_checked=?, last_status=?, last_message=?,
                 consecutive_failures=?, sync_started=NULL,
                 last_success=CASE WHEN ? THEN ? ELSE last_success END,
-                last_error=CASE WHEN ? THEN last_error ELSE ? END,
+                last_error=CASE WHEN ? THEN NULL ELSE ? END,
                 last_scene_count=COALESCE(?, last_scene_count),
                 last_new_at=CASE WHEN ? > 0 THEN ? ELSE last_new_at END
             WHERE id=?""",
             (now, status, message, failures, ok, now, ok, message, scene_count,
              new_count, now, watch_id),
+        )
+    if ok and prior_failures:
+        storage.audit(
+            "global",
+            "catalogue_recovered",
+            {"watch_id": watch_id, "failed_attempts": prior_failures, "recovered_at": now},
         )
     return failures
 
@@ -458,6 +483,12 @@ def _save_calibrated_geotiff(stac_id, raw_linear_tiff_bytes, feature):
     with rasterio.io.MemoryFile(raw_linear_tiff_bytes) as memfile:
         with memfile.open() as src:
             linear = src.read(1).astype("float64")
+            valid = np.isfinite(linear) & (linear > 0)
+            minimum_valid = min(100, max(1, linear.size // 100))
+            if valid.sum() < minimum_valid:
+                raise InvalidImagery(
+                    "Sentinel Hub returned a readable GeoTIFF with insufficient valid backscatter pixels."
+                )
             db_values = sigma0_db(linear).astype("float32")
             profile = src.profile.copy()
             profile.update(dtype="float32", count=1)
@@ -699,6 +730,10 @@ def _fetch_imagery(client, area, feature, bbox, window_end, token, provenance):
         status = "FETCH_FAILED"
         provenance["fetch_error"] = str(exc)
         _imagery_state(last_error=str(exc), last_status="RATE_LIMITED")
+    except InvalidImagery as exc:
+        status = "FETCH_FAILED"
+        provenance["fetch_error"] = str(exc)
+        _imagery_state(last_error=str(exc), last_status="ERROR")
     except httpx.HTTPError as exc:
         status = "FETCH_FAILED"
         provenance["fetch_error"] = str(exc)

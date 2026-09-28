@@ -409,6 +409,17 @@ def case_forcing_provider(case_id, now):
     )
 
 
+def wind_provider():
+    return _provider(
+        "wind",
+        "Wind forcing",
+        "UNAVAILABLE",
+        configured=False,
+        product=None,
+        message="No operational wind provider is configured. Ocean-current data is not presented as wind.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------
@@ -444,7 +455,14 @@ def status(case_id=None, now=None):
     passes, plan = plan_provider(areas, now)
     catalogue, _ = sentinel_catalogue(areas, now, passes)
     watching = any(a["status"] == "ACTIVE" for a in areas)
-    providers = [catalogue, sentinel_imagery(watching), plan, ocean_provider(now), ais_provider(case_id, now)]
+    providers = [
+        catalogue,
+        sentinel_imagery(watching),
+        plan,
+        ocean_provider(now),
+        wind_provider(),
+        ais_provider(case_id, now),
+    ]
     forcing = case_forcing_provider(case_id, now)
     if forcing:
         providers.append(forcing)

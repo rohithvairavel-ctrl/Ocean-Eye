@@ -98,6 +98,7 @@ export function LiveStrip({
   const cat = provider(live, 'sentinel1_catalogue');
   const imagery = provider(live, 'sentinel1_imagery');
   const ocean = provider(live, 'ocean_model');
+  const wind = provider(live, 'wind');
   const forcing = provider(live, 'case_forcing');
   const ais = provider(live, 'ais');
   const latest = live.events?.[0];
@@ -162,7 +163,7 @@ export function LiveStrip({
         name="Ocean"
         state={ocean?.status}
         onClick={() => navigate('Drift & Origin')}
-        foot={forcing ? <>Case forcing <Status state={forcing.status} size="sm" /></> : undefined}
+        foot={forcing ? <>Case forcing <Status state={forcing.status} size="sm" /></> : <>Wind <Status state={wind?.status || 'UNAVAILABLE'} size="sm" /></>}
       >
         <div className="live-row">
           <dt>Model valid to</dt>

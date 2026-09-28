@@ -165,7 +165,7 @@ def test_imagery_uses_the_scene_own_time_range(isolated, monkeypatch):
     with _client(handler) as fake:
         copernicus.check_watch_area(area, fake)
     time_range = bodies[0]["input"]["data"][0]["dataFilter"]["timeRange"]
-    assert time_range == {"from": "2026-09-22T00:31:01.644669Z", "to": "2026-09-22T00:31:26.644669Z"}
+    assert time_range == {"from": "2026-09-22T00:29:01.644669Z", "to": "2026-09-22T00:33:26.644669Z"}
     imagery = live_data.sentinel_imagery()
     assert imagery["status"] == "CURRENT" and imagery["last_success"]
 

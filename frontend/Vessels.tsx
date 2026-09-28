@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { RotateCcw, Ship, TriangleAlert } from 'lucide-react';
 import { Json, coordinate, post, shortTime, time } from './api';
 import MaritimeMap from './MaritimeMap';
+import VesselIllustration from './VesselIllustration';
 import { Bar, Metric, PageHeader, Section, StateBlock, Tag } from './ui';
 
 function Spark({ track, field, unit }: { track: Json[]; field: 'sog' | 'cog'; unit: string }) {
@@ -194,6 +195,7 @@ export default function Vessels({
         </div>
 
         <article className="dossier" aria-label={`Vessel dossier: ${v.name}`}>
+          <VesselIllustration type={v.vessel_type} />
           <div className="dossier-head">
             <div className="dossier-icon"><Ship size={20} aria-hidden /></div>
             <div>

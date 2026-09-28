@@ -6,8 +6,8 @@ A working local maritime forensics application with a React dashboard, Python an
 
 1. Open **OCEAN-EYE.code-workspace** in VS Code (or File > Open Folder and choose this folder).
 2. Choose **Terminal > Run Build Task** (`Ctrl+Shift+B`) and select **OCEAN-EYE: Start app**. The default task starts both services.
-3. Open **http://127.0.0.1:5173** in your browser.
-4. Open **Cases & Data**, choose **New demo case**, then **Run full investigation**.
+3. Open **http://127.0.0.1:5173** in your browser. It opens in **Live operations** mode, without silently selecting a demo.
+4. To present the reproducible sample, open **Cases & Data**, choose **New demo case**, then **Run full investigation**.
 5. Follow [the presentation guide](docs/DEMO_GUIDE.md). All results are computed from input files.
 6. Stop both services with `Ctrl+C` in the launch terminal.
 
@@ -73,10 +73,18 @@ backend only; the browser polls the local `/api/v1/live-data/status` control pla
 | Calibrated SIGMA0 imagery (Sentinel Hub Process API) | `CDSE_CLIENT_ID` / `CDSE_CLIENT_SECRET` | scenes recorded, imagery `AUTH_REQUIRED` |
 | Sentinel-1 acquisition plans (ESA KML) | nothing | next pass `UNKNOWN` |
 | Copernicus Marine currents | `copernicusmarine` toolbox + `COPERNICUSMARINE_SERVICE_*` | `NOT_INSTALLED` / `AUTH_REQUIRED` |
+| Wind forcing | a separately configured operational wind provider | `UNAVAILABLE`; currents are never relabelled as wind |
 
 Add an area to watch from Next Observation, TruthLoop or Copernicus Watch. Planned passes
 are labelled PLANNED — NOT GUARANTEED. See `.env.example` for configuration. Provider
 credentials stay in the backend environment and must never use a `VITE_` prefix.
+If the dashboard and API are deployed on different origins, set the public, non-secret
+`VITE_API_BASE_URL` while building the frontend. Same-origin deployments need no value.
+
+Live observations and demo investigations are visibly separated. A discovered Sentinel-1
+scene is retained as a real observation even when screening finds no dark-region candidate;
+the record then stops at `WAITING_FOR_AIS` rather than fabricating a spill, drift result,
+vessel match, or wind input.
 
 The scheduler runs inside the API process. A sleeping, paused, or scale-to-zero host does
 not poll providers while it is stopped, and multiple API workers would each start a
