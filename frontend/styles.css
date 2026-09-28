@@ -1466,6 +1466,7 @@ input[type='checkbox'] {
   bottom: 60px;
   z-index: 500;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--s3);
   padding: 6px 10px;
   background: rgba(11, 13, 14, 0.82);
@@ -1475,6 +1476,7 @@ input[type='checkbox'] {
   font-size: 11.5px;
   color: var(--text-2);
   pointer-events: none;
+  max-width: calc(100% - 150px);
 }
 .map-legend span {
   display: inline-flex;
@@ -1503,6 +1505,15 @@ input[type='checkbox'] {
 .sw.selection {
   background: var(--teal);
   border-radius: 50%;
+}
+.legend-vessel {
+  color: var(--teal);
+  font-size: 10px;
+}
+.legend-current {
+  color: var(--cyan);
+  font-size: 16px;
+  line-height: 10px;
 }
 .map-time {
   position: absolute;
@@ -1541,11 +1552,49 @@ input[type='range'] {
 }
 .current-arrow span {
   display: block;
-  color: var(--amber);
-  font-size: 22px;
-  font-weight: 700;
-  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+  color: var(--cyan);
+  font-size: 21px;
+  font-weight: 600;
+  opacity: 0.68;
+  text-shadow: 0 0 8px rgba(110, 168, 201, 0.35);
   transform-origin: center;
+  animation: current-pulse 2.2s var(--flow-delay, 0s) ease-in-out infinite;
+}
+.vessel-course-arrow {
+  width: 18px !important;
+  height: 18px !important;
+  margin-left: -9px !important;
+  margin-top: -9px !important;
+  color: var(--text-3);
+  pointer-events: none;
+}
+.vessel-course-arrow span {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.85));
+  transform-origin: center;
+}
+.vessel-course-arrow.leading {
+  color: var(--teal);
+}
+.leaflet-interactive.vessel-track:hover,
+.leaflet-interactive.selected-track {
+  stroke-width: 3.5;
+  stroke-opacity: 1;
+}
+.closest-approach-marker {
+  animation: closest-pulse 2.4s ease-in-out infinite;
+}
+@keyframes current-pulse {
+  0%, 100% { opacity: 0.38; }
+  50% { opacity: 0.88; }
+}
+@keyframes closest-pulse {
+  0%, 100% { stroke-opacity: 0.45; }
+  50% { stroke-opacity: 1; }
 }
 
 /* -------------------------------------------------------------- tables */

@@ -1,7 +1,8 @@
 function category(value: string | null | undefined) {
   const type = (value || '').toLowerCase();
-  if (type.includes('tanker')) return 'tanker';
-  if (type.includes('container') || type.includes('cargo')) return 'cargo';
+  const code = Number(type);
+  if (type.includes('tanker') || (code >= 80 && code < 90)) return 'tanker';
+  if (type.includes('container') || type.includes('cargo') || (code >= 70 && code < 80)) return 'cargo';
   return 'ship';
 }
 

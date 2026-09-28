@@ -260,7 +260,7 @@ export default function Overview({
             selected={selected}
             onSelect={setSelected}
             truth={truth}
-            layers={{ aoi: false }}
+            layers={{ aoi: false, ais: true, currents: true, gaps: true }}
             height={560}
             onOpenVessel={onOpenVessel}
           />

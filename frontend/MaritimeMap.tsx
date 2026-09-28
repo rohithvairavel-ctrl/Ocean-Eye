@@ -353,22 +353,29 @@ export default function MaritimeMap({
           .bindTooltip(tip(r.matched ? 'SAR return · AIS match within tolerance' : 'SAR return · unmatched (screening only)'), { className: 'map-tip' });
 
     const sampleTime = Date.parse(a.observation_time) + (current?.hours || 0) * 3600000;
-    if (show.currents) {
+    if (show.currents && a.environment?.records?.length) {
       const rows = a.environment.records;
       const row = rows.reduce((best: Json, r: Json) =>
         Math.abs(Date.parse(r.time) - sampleTime) < Math.abs(Date.parse(best.time) - sampleTime) ? r : best,
       );
-      const p = a.spill.centroid;
       const angle = (Math.atan2(row.current_east_ms, row.current_north_ms) * 180) / Math.PI;
-      L.marker([p[1], p[0]], {
-        icon: L.divIcon({
-          className: 'current-arrow',
-          html: `<span style="transform:rotate(${angle}deg)">↑</span>`,
-        }),
-        interactive: true,
-      })
-        .addTo(g)
-        .bindTooltip(tip(`Forcing input · ${time(row.time)} · E ${row.current_east_ms} / N ${row.current_north_ms} m/s`), { className: 'map-tip' });
+      const [west, south, east, north] = a.spill.bounds;
+      const dx = Math.max(east - west, 0.12);
+      const dy = Math.max(north - south, 0.1);
+      const center = a.spill.centroid;
+      const positions = [-0.9, 0, 0.9].flatMap((y) =>
+        [-1.2, 0, 1.2].map((x) => [center[0] + x * dx, center[1] + y * dy]),
+      );
+      for (const [index, p] of positions.entries())
+        L.marker([p[1], p[0]], {
+          icon: L.divIcon({
+            className: 'current-arrow',
+            html: `<span style="--flow-delay:${index * -0.18}s;transform:rotate(${angle}deg)">↝</span>`,
+          }),
+          interactive: true,
+        })
+          .addTo(g)
+          .bindTooltip(tip(`Ocean-current forcing · ${time(row.time)} · E ${row.current_east_ms} / N ${row.current_north_ms} m/s`), { className: 'map-tip' });
     }
 
     const nearestPoint = (v: Json) => {
@@ -378,16 +385,40 @@ export default function MaritimeMap({
       );
       return Math.abs(Date.parse(p.time) - sampleTime) <= 30 * 60000 ? p : null;
     };
-    const drawVessel = (v: Json, color: string, emphasis: boolean) => {
+    const drawVessel = (v: Json, color: string, emphasis: boolean, subdued = false) => {
       shape(
         v.geometry,
-        { color, weight: emphasis ? 2.4 : 1.6, opacity: emphasis ? 0.95 : 0.7, dashArray: emphasis ? undefined : '4 5', fill: false },
+        {
+          color,
+          weight: emphasis ? 3 : subdued ? 1.1 : 1.8,
+          opacity: emphasis ? 1 : subdued ? 0.38 : 0.72,
+          dashArray: emphasis ? undefined : subdued ? '2 6' : '4 5',
+          fill: false,
+          className: emphasis ? 'vessel-track selected-track' : 'vessel-track',
+        },
         () => {
           handlers.current.onSelect?.(v.mmsi);
           setInspect({ type: 'vessel', data: v });
         },
         `${v.name} · observed AIS positions (segments do not prove the route)`,
       );
+      if (v.track.length > 1) {
+        const indexes = emphasis
+          ? [Math.floor(v.track.length * 0.34), Math.floor(v.track.length * 0.68)]
+          : [Math.floor(v.track.length * 0.55)];
+        for (const index of [...new Set(indexes)].filter((i) => i > 0 && i < v.track.length)) {
+          const before = v.track[index - 1].coordinates;
+          const point = v.track[index].coordinates;
+          const course = (Math.atan2(point[0] - before[0], point[1] - before[1]) * 180) / Math.PI;
+          L.marker([point[1], point[0]], {
+            icon: L.divIcon({
+              className: `vessel-course-arrow${emphasis ? ' leading' : ''}`,
+              html: `<span style="transform:rotate(${course}deg)">▲</span>`,
+            }),
+            interactive: false,
+          }).addTo(g);
+        }
+      }
       if (show.gaps)
         for (const gap of v.gaps)
           shape(gap.corridor, { color: C.assumed, weight: 1, fillOpacity: 0.06, dashArray: '2 4' }, undefined, 'Assumed travel envelope during AIS gap');
@@ -400,28 +431,35 @@ export default function MaritimeMap({
             setInspect({ type: 'vessel', data: v });
           })
           .bindTooltip(tip(`${v.name} · ${p === nearestPoint(v) ? 'observed ' + shortTime(p.time) : 'last observed position'}`), { className: 'map-tip' });
+      const closest = v.track.length
+        ? v.track.reduce((best: Json, point: Json) =>
+            Math.abs(Date.parse(point.time) - Date.parse(v.nearest_time)) < Math.abs(Date.parse(best.time) - Date.parse(v.nearest_time)) ? point : best,
+          )
+        : null;
+      if (closest && (emphasis || v.mmsi === lead?.mmsi))
+        L.circleMarker([closest.coordinates[1], closest.coordinates[0]], {
+          color: C.assumed,
+          radius: 8,
+          weight: 1.4,
+          fill: false,
+          dashArray: '2 3',
+          className: 'closest-approach-marker',
+        })
+          .addTo(g)
+          .bindTooltip(tip(`${v.name} · closest modeled-origin approach ${v.nearest_km} km · ${shortTime(v.nearest_time)}`), { className: 'map-tip' });
     };
     const sel = a.vessels.find((v: Json) => v.mmsi === selected);
+    if (show.ais)
+      for (const v of a.vessels) {
+        if (v.mmsi === sel?.mmsi || v.mmsi === lead?.mmsi) continue;
+        drawVessel(v, C.vessel, false, true);
+      }
     if (sel && lead && sel.mmsi !== lead.mmsi) {
       if (show.lead) drawVessel(lead, C.lead, false);
       if (show.selected) drawVessel(sel, C.selection, true);
     } else if (lead && (show.lead || show.selected)) {
       drawVessel(lead, C.selection, true);
     }
-
-    if (show.ais)
-      for (const v of a.vessels) {
-        if (v.mmsi === sel?.mmsi || v.mmsi === lead?.mmsi) continue;
-        const p = nearestPoint(v);
-        if (!p) continue;
-        dot(p.coordinates, C.vessel, 3.2, 0.7)
-          .on('click', (e: L.LeafletMouseEvent) => {
-            L.DomEvent.stopPropagation(e);
-            handlers.current.onSelect?.(v.mmsi);
-            setInspect({ type: 'vessel', data: v });
-          })
-          .bindTooltip(tip(`${v.name} · observed ${shortTime(p.time)}`), { className: 'map-tip' });
-      }
 
     if (show.aoi && candidates)
       for (const c of candidates)
@@ -620,6 +658,8 @@ export default function MaritimeMap({
         <span><i className="sw predicted" />Predicted</span>
         <span><i className="sw assumed" />Assumed</span>
         <span><i className="sw selection" />Selection</span>
+        {show.ais && <span><b className="legend-vessel">▲</b>Vessel course</span>}
+        {show.currents && <span><b className="legend-current">↝</b>Ocean current</span>}
       </div>
       )}
       {a && !global && timeline && frames.length > 0 && (
